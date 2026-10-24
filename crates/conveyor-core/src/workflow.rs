@@ -15,6 +15,31 @@ pub enum IssueState {
 }
 
 impl IssueState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NeedsSpec => "needs-spec",
+            Self::SpecReady => "spec-ready",
+            Self::ReadyForBuild => "ready-for-build",
+            Self::InProgress => "in-progress",
+            Self::InReview => "in-review",
+            Self::Done => "done",
+            Self::Blocked => "blocked",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "needs-spec" => Some(Self::NeedsSpec),
+            "spec-ready" => Some(Self::SpecReady),
+            "ready-for-build" => Some(Self::ReadyForBuild),
+            "in-progress" => Some(Self::InProgress),
+            "in-review" => Some(Self::InReview),
+            "done" => Some(Self::Done),
+            "blocked" => Some(Self::Blocked),
+            _ => None,
+        }
+    }
+
     /// Moves to `next` when the workflow explicitly permits that transition.
     pub fn transition_to(self, next: Self) -> Result<Self, TransitionError> {
         if self.allows(next) {
