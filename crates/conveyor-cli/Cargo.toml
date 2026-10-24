@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[[bin]]
+name = "conveyor"
+path = "src/main.rs"
+
 [dependencies]
 conveyor-core = { path = "../conveyor-core" }
 
