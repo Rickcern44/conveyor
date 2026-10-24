@@ -2,4 +2,5 @@
 
 pub mod config;
 pub mod doctor;
+pub mod issue_contract;
 pub mod workflow;

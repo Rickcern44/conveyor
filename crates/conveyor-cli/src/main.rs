@@ -5,6 +5,7 @@ use std::process::Command;
 
 use conveyor_core::config::Config;
 use conveyor_core::doctor::{Doctor, FindingKind, Probe, ProbeResult};
+use conveyor_core::issue_contract::{from_markdown, validate};
 
 fn main() {
     let arguments = std::env::args().skip(1);
@@ -36,8 +37,79 @@ where
     match command {
         "init" => initialize(&arguments[1..], directory),
         "doctor" => doctor(directory),
+        "issue" => issue(&arguments[1..], directory),
         "--help" | "-h" | "help" => Ok(usage().to_owned()),
         _ => Err(format!("unknown command: {command}\n\n{}", usage())),
+    }
+}
+
+fn issue(arguments: &[String], directory: &Path) -> Result<String, String> {
+    match arguments {
+        [command, number, options @ ..] if command == "validate" => {
+            validate_issue(number, options, directory)
+        }
+        _ => Err("Usage: conveyor issue validate <number> [--format human|json]".to_owned()),
+    }
+}
+
+fn validate_issue(number: &str, options: &[String], directory: &Path) -> Result<String, String> {
+    let issue_number = number
+        .parse::<u64>()
+        .map_err(|_| format!("issue number must be a positive integer: {number}"))?;
+    if issue_number == 0 {
+        return Err("issue number must be a positive integer: 0".to_owned());
+    }
+    let format = parse_format(options)?;
+    let output = Command::new("gh")
+        .args(["issue", "view", number, "--json", "body", "--jq", ".body"])
+        .current_dir(directory)
+        .output()
+        .map_err(|error| format!("could not run gh: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "could not fetch issue #{number}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let report = validate(&from_markdown(&String::from_utf8_lossy(&output.stdout)));
+    match format {
+        ReportFormat::Human if report.is_valid() => {
+            Ok(format!("issue #{issue_number}: ready for build"))
+        }
+        ReportFormat::Human => Ok(format!(
+            "issue #{issue_number}: not ready for build\nmissing:\n{}",
+            report
+                .missing
+                .iter()
+                .map(|requirement| format!("- {}", requirement.label()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )),
+        ReportFormat::Json => Ok(format!(
+            "{{\"issue\":{issue_number},\"valid\":{},\"missing\":[{}]}}",
+            report.is_valid(),
+            report
+                .missing
+                .iter()
+                .map(|requirement| format!("\"{}\"", requirement.label()))
+                .collect::<Vec<_>>()
+                .join(",")
+        )),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ReportFormat {
+    Human,
+    Json,
+}
+
+fn parse_format(options: &[String]) -> Result<ReportFormat, String> {
+    match options {
+        [] => Ok(ReportFormat::Human),
+        [option, value] if option == "--format" && value == "human" => Ok(ReportFormat::Human),
+        [option, value] if option == "--format" && value == "json" => Ok(ReportFormat::Json),
+        _ => Err("expected --format human or --format json".to_owned()),
     }
 }
 
@@ -167,7 +239,7 @@ fn initialize(arguments: &[String], directory: &Path) -> Result<String, String> 
 }
 
 fn usage() -> &'static str {
-    "Usage:\n  conveyor init --repository <owner/repository> [--target-branch <branch>]\n  conveyor doctor"
+    "Usage:\n  conveyor init --repository <owner/repository> [--target-branch <branch>]\n  conveyor doctor\n  conveyor issue validate <number> [--format human|json]"
 }
 
 #[cfg(test)]
