@@ -7,6 +7,7 @@ use conveyor_core::config::Config;
 use conveyor_core::doctor::{Doctor, FindingKind, Probe, ProbeResult};
 use conveyor_core::issue_contract::{from_markdown, validate};
 use conveyor_core::session::{SessionRecord, SessionStore};
+use conveyor_core::task_packet::{AgentRole, TaskPacket};
 use conveyor_core::verification::{
     CommandResult, CommandRunner, Outcome, VerificationReport, verify,
 };
@@ -45,9 +46,63 @@ where
         "issue" => issue(&arguments[1..], directory),
         "status" => status(&arguments[1..], directory),
         "verify" => verify_command(&arguments[1..], directory),
+        "handoff" => handoff(&arguments[1..], directory),
         "--help" | "-h" | "help" => Ok(usage().to_owned()),
         _ => Err(format!("unknown command: {command}\n\n{}", usage())),
     }
+}
+
+fn handoff(arguments: &[String], directory: &Path) -> Result<String, String> {
+    let (number, role) = match arguments {
+        [number, option, role] if option == "--role" => (number.as_str(), role.as_str()),
+        _ => {
+            return Err(
+                "Usage: conveyor handoff <number> --role <planner|implementer|reviewer>".to_owned(),
+            );
+        }
+    };
+    let issue_number = parse_issue_number(number)?;
+    let role = AgentRole::parse(role).ok_or("role must be planner, implementer, or reviewer")?;
+    let contract = from_markdown(&fetch_issue_body(number, directory)?);
+    let validation = validate(&contract);
+    if !validation.is_valid() {
+        return Err(format!(
+            "issue #{issue_number} is not ready for handoff; missing:\n{}",
+            validation
+                .missing
+                .iter()
+                .map(|requirement| format!("- {}", requirement.label()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+    }
+    let configuration = load_config(directory)?;
+    let guidance = std::fs::read_to_string(directory.join("AGENTS.md"))
+        .unwrap_or_else(|_| "No repository agent guidance was found.".to_owned());
+    let packet = TaskPacket::new(
+        issue_number,
+        role,
+        format!("feat/{issue_number}-{}", role.as_str()),
+        contract,
+        guidance,
+        configuration.checks,
+    );
+    let path = write_packet(directory, &packet)?;
+    Ok(format!("created task packet: {}", path.display()))
+}
+
+fn write_packet(directory: &Path, packet: &TaskPacket) -> Result<std::path::PathBuf, String> {
+    let packets = directory.join(".conveyor/packets");
+    std::fs::create_dir_all(&packets)
+        .map_err(|error| format!("could not create {}: {error}", packets.display()))?;
+    let filename = format!("{}-{}.md", packet.issue_number, packet.role.as_str());
+    let path = packets.join(&filename);
+    let temporary = packets.join(format!(".{filename}.tmp"));
+    std::fs::write(&temporary, packet.to_markdown())
+        .map_err(|error| format!("could not write {}: {error}", temporary.display()))?;
+    std::fs::rename(&temporary, &path)
+        .map_err(|error| format!("could not save {}: {error}", path.display()))?;
+    Ok(path)
 }
 
 fn verify_command(arguments: &[String], directory: &Path) -> Result<String, String> {
@@ -207,18 +262,7 @@ fn issue(arguments: &[String], directory: &Path) -> Result<String, String> {
 fn validate_issue(number: &str, options: &[String], directory: &Path) -> Result<String, String> {
     let issue_number = parse_issue_number(number)?;
     let format = parse_format(options)?;
-    let output = Command::new("gh")
-        .args(["issue", "view", number, "--json", "body", "--jq", ".body"])
-        .current_dir(directory)
-        .output()
-        .map_err(|error| format!("could not run gh: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "could not fetch issue #{number}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    let report = validate(&from_markdown(&String::from_utf8_lossy(&output.stdout)));
+    let report = validate(&from_markdown(&fetch_issue_body(number, directory)?));
     match format {
         ReportFormat::Human if report.is_valid() => {
             Ok(format!("issue #{issue_number}: ready for build"))
@@ -243,6 +287,21 @@ fn validate_issue(number: &str, options: &[String], directory: &Path) -> Result<
                 .join(",")
         )),
     }
+}
+
+fn fetch_issue_body(number: &str, directory: &Path) -> Result<String, String> {
+    let output = Command::new("gh")
+        .args(["issue", "view", number, "--json", "body", "--jq", ".body"])
+        .current_dir(directory)
+        .output()
+        .map_err(|error| format!("could not run gh: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "could not fetch issue #{number}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 fn parse_issue_number(number: &str) -> Result<u64, String> {
@@ -391,7 +450,7 @@ fn initialize(arguments: &[String], directory: &Path) -> Result<String, String> 
 }
 
 fn usage() -> &'static str {
-    "Usage:\n  conveyor init --repository <owner/repository> [--target-branch <branch>]\n  conveyor doctor\n  conveyor status [issue]\n  conveyor verify [--format human|json]\n  conveyor issue validate <number> [--format human|json]"
+    "Usage:\n  conveyor init --repository <owner/repository> [--target-branch <branch>]\n  conveyor doctor\n  conveyor status [issue]\n  conveyor issue validate <number> [--format human|json]\n  conveyor handoff <number> --role <planner|implementer|reviewer>\n  conveyor verify [--format human|json]"
 }
 
 #[cfg(test)]
@@ -400,9 +459,10 @@ mod tests {
 
     use conveyor_core::config::{Check, Config};
     use conveyor_core::session::{SessionRecord, SessionStore};
+    use conveyor_core::task_packet::{AgentRole, TaskPacket};
     use conveyor_core::workflow::IssueState;
 
-    use super::run;
+    use super::{run, write_packet};
 
     fn temporary_directory(name: &str) -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!("conveyor-cli-{name}-{}", std::process::id()));
@@ -492,6 +552,39 @@ mod tests {
 
         assert!(output.contains("verification: passed"));
         assert!(output.contains("always passes: passed"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn writes_a_handoff_packet_to_local_conveyor_storage() {
+        let directory = temporary_directory("packet");
+        let packet = TaskPacket::new(
+            70,
+            AgentRole::Implementer,
+            "feat/70-handoff",
+            conveyor_core::issue_contract::IssueContract {
+                problem: "Make handoffs portable.".to_owned(),
+                in_scope: "Task packet creation.".to_owned(),
+                out_of_scope: "Agent execution.".to_owned(),
+                acceptance_criteria: "- Packet is written.".to_owned(),
+                affected_components: "conveyor-cli".to_owned(),
+                verification_plan: "cargo test --workspace".to_owned(),
+                dependencies_risks: "None.".to_owned(),
+                open_questions: "None.".to_owned(),
+                delivery_slice: None,
+            },
+            "Use TDD.",
+            Vec::new(),
+        );
+
+        let path = write_packet(&directory, &packet).unwrap();
+
+        assert_eq!(path, directory.join(".conveyor/packets/70-implementer.md"));
+        assert!(
+            fs::read_to_string(path)
+                .unwrap()
+                .contains("Make handoffs portable.")
+        );
         fs::remove_dir_all(directory).unwrap();
     }
 }

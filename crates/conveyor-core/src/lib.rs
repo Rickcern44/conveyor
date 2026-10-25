@@ -1,5 +1,6 @@
 //! Deterministic business rules shared by Conveyor command adapters.
 
+pub mod build_plan;
 pub mod config;
 pub mod doctor;
 pub mod issue_contract;
