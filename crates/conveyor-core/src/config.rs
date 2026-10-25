@@ -121,8 +121,20 @@ impl Config {
             .map(|action| format!("\"{}\"", action.as_str()))
             .collect::<Vec<_>>()
             .join(", ");
+        let checks = self
+            .checks
+            .iter()
+            .map(|check| {
+                format!(
+                    "\n[[checks]]\nname = {}\ncommand = {}\nrequired = {}\n",
+                    quote(&check.name),
+                    quote(&check.command),
+                    check.required
+                )
+            })
+            .collect::<String>();
         Ok(format!(
-            "[conveyor]\nversion = {}\ntarget_branch = {}\n\n[github]\nrepository = {}\n\n[workflow]\nready_label = {}\nblocked_label = {}\ndraft_prs_only = {}\nrequire_confirmation_for = [{}]\n\n[agents]\nplanner = {}\nimplementer = {}\nreviewer = {}\n",
+            "[conveyor]\nversion = {}\ntarget_branch = {}\n\n[github]\nrepository = {}\n\n[workflow]\nready_label = {}\nblocked_label = {}\ndraft_prs_only = {}\nrequire_confirmation_for = [{}]\n\n[agents]\nplanner = {}\nimplementer = {}\nreviewer = {}\n{}",
             self.conveyor.version,
             quote(&self.conveyor.target_branch),
             quote(&self.github.repository),
@@ -133,6 +145,7 @@ impl Config {
             quote(&self.agents.planner),
             quote(&self.agents.implementer),
             quote(&self.agents.reviewer),
+            checks,
         ))
     }
 
@@ -140,9 +153,15 @@ impl Config {
     pub fn from_toml(source: &str) -> Result<Self, ConfigError> {
         let mut section = "";
         let mut values = std::collections::BTreeMap::new();
+        let mut check_values = Vec::<std::collections::BTreeMap<String, String>>::new();
         for raw_line in source.lines() {
             let line = raw_line.trim();
             if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if line == "[[checks]]" {
+                section = "checks";
+                check_values.push(std::collections::BTreeMap::new());
                 continue;
             }
             if line.starts_with('[') && line.ends_with(']') {
@@ -154,7 +173,14 @@ impl Config {
                 .ok_or_else(|| ConfigError::MalformedLine {
                     line: raw_line.to_owned(),
                 })?;
-            values.insert(format!("{section}.{}", key.trim()), value.trim().to_owned());
+            if section == "checks" {
+                check_values
+                    .last_mut()
+                    .expect("checks section has an entry")
+                    .insert(key.trim().to_owned(), value.trim().to_owned());
+            } else {
+                values.insert(format!("{section}.{}", key.trim()), value.trim().to_owned());
+            }
         }
         let version_value = required(&values, "conveyor.version")?;
         let version = version_value
@@ -189,7 +215,10 @@ impl Config {
                 implementer: parse_string(required(&values, "agents.implementer")?)?,
                 reviewer: parse_string(required(&values, "agents.reviewer")?)?,
             },
-            checks: Vec::new(),
+            checks: check_values
+                .iter()
+                .map(parse_check)
+                .collect::<Result<Vec<_>, _>>()?,
         })
     }
 }
@@ -266,4 +295,33 @@ fn parse_bool(value: &str) -> Result<bool, ConfigError> {
         key: "workflow.draft_prs_only",
         value: value.to_owned(),
     })
+}
+
+fn parse_check(values: &std::collections::BTreeMap<String, String>) -> Result<Check, ConfigError> {
+    let name = check_required(values, "name")?;
+    let command = check_required(values, "command")?;
+    let required_value = check_required(values, "required")?;
+    Ok(Check {
+        name: parse_string(name)?,
+        command: parse_string(command)?,
+        required: required_value
+            .parse()
+            .map_err(|_| ConfigError::InvalidValue {
+                key: "checks.required",
+                value: required_value.to_owned(),
+            })?,
+    })
+}
+
+fn check_required<'a>(
+    values: &'a std::collections::BTreeMap<String, String>,
+    key: &str,
+) -> Result<&'a str, ConfigError> {
+    values
+        .get(key)
+        .map(String::as_str)
+        .ok_or_else(|| ConfigError::InvalidValue {
+            key: "checks",
+            value: format!("missing {key}"),
+        })
 }

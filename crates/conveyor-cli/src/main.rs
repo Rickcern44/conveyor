@@ -6,6 +6,11 @@ use std::process::Command;
 use conveyor_core::config::Config;
 use conveyor_core::doctor::{Doctor, FindingKind, Probe, ProbeResult};
 use conveyor_core::issue_contract::{from_markdown, validate};
+use conveyor_core::session::{SessionRecord, SessionStore};
+use conveyor_core::verification::{
+    CommandResult, CommandRunner, Outcome, VerificationReport, verify,
+};
+use conveyor_core::workflow::IssueState;
 
 fn main() {
     let arguments = std::env::args().skip(1);
@@ -38,8 +43,155 @@ where
         "init" => initialize(&arguments[1..], directory),
         "doctor" => doctor(directory),
         "issue" => issue(&arguments[1..], directory),
+        "status" => status(&arguments[1..], directory),
+        "verify" => verify_command(&arguments[1..], directory),
         "--help" | "-h" | "help" => Ok(usage().to_owned()),
         _ => Err(format!("unknown command: {command}\n\n{}", usage())),
+    }
+}
+
+fn verify_command(arguments: &[String], directory: &Path) -> Result<String, String> {
+    let format = parse_format(arguments)?;
+    let configuration = load_config(directory)?;
+    let report = verify(&LocalCommandRunner { directory }, &configuration.checks);
+    match format {
+        ReportFormat::Human => Ok(render_verification_human(&report)),
+        ReportFormat::Json => Ok(render_verification_json(&report)),
+    }
+}
+
+fn load_config(directory: &Path) -> Result<Config, String> {
+    let path = directory.join(".conveyor.toml");
+    let source = std::fs::read_to_string(&path)
+        .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+    Config::from_toml(&source)
+        .map_err(|error| format!("could not parse {}: {error}", path.display()))
+}
+
+struct LocalCommandRunner<'a> {
+    directory: &'a Path,
+}
+
+impl CommandRunner for LocalCommandRunner<'_> {
+    fn run(&self, command: &str) -> CommandResult {
+        let started = std::time::Instant::now();
+        let status = Command::new("/bin/sh")
+            .args(["-c", command])
+            .current_dir(self.directory)
+            .status();
+        CommandResult {
+            exit_code: status.ok().and_then(|status| status.code()),
+            duration_ms: started.elapsed().as_millis(),
+        }
+    }
+}
+
+fn render_verification_human(report: &VerificationReport) -> String {
+    let status = if report.passes_required_checks() {
+        "passed"
+    } else {
+        "failed"
+    };
+    let checks = report
+        .results
+        .iter()
+        .map(|result| {
+            let outcome = match result.outcome {
+                Outcome::Passed => "passed",
+                Outcome::Failed => "failed",
+            };
+            format!(
+                "{}: {} (exit: {}, duration: {}ms, required: {})",
+                result.name,
+                outcome,
+                result
+                    .exit_code
+                    .map_or_else(|| "unavailable".to_owned(), |code| code.to_string()),
+                result.duration_ms,
+                result.required
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("verification: {status}\n{checks}")
+}
+
+fn render_verification_json(report: &VerificationReport) -> String {
+    let checks = report
+        .results
+        .iter()
+        .map(|result| {
+            format!(
+                "{{\"name\":{},\"command\":{},\"required\":{},\"outcome\":{},\"exit_code\":{},\"duration_ms\":{}}}",
+                json_string(&result.name),
+                json_string(&result.command),
+                result.required,
+                json_string(match result.outcome { Outcome::Passed => "passed", Outcome::Failed => "failed" }),
+                result.exit_code.map_or_else(|| "null".to_owned(), |code| code.to_string()),
+                result.duration_ms
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"passed_required_checks\":{},\"checks\":[{}]}}",
+        report.passes_required_checks(),
+        checks
+    )
+}
+
+fn json_string(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('\"', "\\\""))
+}
+
+fn status(arguments: &[String], directory: &Path) -> Result<String, String> {
+    let store = SessionStore::new(directory);
+    match arguments {
+        [] => {
+            let sessions = store.list().map_err(|error| error.to_string())?;
+            if sessions.is_empty() {
+                Ok("status: no active local sessions".to_owned())
+            } else {
+                Ok(sessions
+                    .iter()
+                    .map(render_session)
+                    .collect::<Vec<_>>()
+                    .join("\n\n"))
+            }
+        }
+        [issue] => {
+            let issue_number = parse_issue_number(issue)?;
+            let session = store
+                .load(issue_number)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| format!("status: no local session for issue #{issue_number}"))?;
+            Ok(render_session(&session))
+        }
+        _ => Err("Usage: conveyor status [issue]".to_owned()),
+    }
+}
+
+fn render_session(session: &SessionRecord) -> String {
+    let blocker = session.blocker.as_deref().unwrap_or("none");
+    format!(
+        "issue #{}\nstate: {}\nbranch: {}\nblocker: {}\nnext action: {}",
+        session.issue_number,
+        session.state.as_str(),
+        session.branch,
+        blocker,
+        next_action(session.state)
+    )
+}
+
+fn next_action(state: IssueState) -> &'static str {
+    match state {
+        IssueState::NeedsSpec => "complete the issue contract",
+        IssueState::SpecReady => "obtain approval for ready-for-build",
+        IssueState::ReadyForBuild => "start an implementation session",
+        IssueState::InProgress => "run verification and prepare review",
+        IssueState::InReview => "review evidence and decide whether to close",
+        IssueState::Done => "no action; issue is complete",
+        IssueState::Blocked => "resolve the recorded blocker",
     }
 }
 
@@ -53,12 +205,7 @@ fn issue(arguments: &[String], directory: &Path) -> Result<String, String> {
 }
 
 fn validate_issue(number: &str, options: &[String], directory: &Path) -> Result<String, String> {
-    let issue_number = number
-        .parse::<u64>()
-        .map_err(|_| format!("issue number must be a positive integer: {number}"))?;
-    if issue_number == 0 {
-        return Err("issue number must be a positive integer: 0".to_owned());
-    }
+    let issue_number = parse_issue_number(number)?;
     let format = parse_format(options)?;
     let output = Command::new("gh")
         .args(["issue", "view", number, "--json", "body", "--jq", ".body"])
@@ -98,6 +245,15 @@ fn validate_issue(number: &str, options: &[String], directory: &Path) -> Result<
     }
 }
 
+fn parse_issue_number(number: &str) -> Result<u64, String> {
+    let issue_number = number
+        .parse::<u64>()
+        .map_err(|_| format!("issue number must be a positive integer: {number}"))?;
+    (issue_number > 0)
+        .then_some(issue_number)
+        .ok_or_else(|| "issue number must be a positive integer: 0".to_owned())
+}
+
 #[derive(Clone, Copy)]
 enum ReportFormat {
     Human,
@@ -114,11 +270,7 @@ fn parse_format(options: &[String]) -> Result<ReportFormat, String> {
 }
 
 fn doctor(directory: &Path) -> Result<String, String> {
-    let path = directory.join(".conveyor.toml");
-    let source = std::fs::read_to_string(&path)
-        .map_err(|error| format!("could not read {}: {error}", path.display()))?;
-    let configuration = Config::from_toml(&source)
-        .map_err(|error| format!("could not parse {}: {error}", path.display()))?;
+    let configuration = load_config(directory)?;
     let report = Doctor::new(&SystemProbe { directory }).check(&configuration);
     if report.is_healthy() {
         return Ok("doctor: all checks passed".to_owned());
@@ -239,12 +391,16 @@ fn initialize(arguments: &[String], directory: &Path) -> Result<String, String> 
 }
 
 fn usage() -> &'static str {
-    "Usage:\n  conveyor init --repository <owner/repository> [--target-branch <branch>]\n  conveyor doctor\n  conveyor issue validate <number> [--format human|json]"
+    "Usage:\n  conveyor init --repository <owner/repository> [--target-branch <branch>]\n  conveyor doctor\n  conveyor status [issue]\n  conveyor verify [--format human|json]\n  conveyor issue validate <number> [--format human|json]"
 }
 
 #[cfg(test)]
 mod tests {
     use std::fs;
+
+    use conveyor_core::config::{Check, Config};
+    use conveyor_core::session::{SessionRecord, SessionStore};
+    use conveyor_core::workflow::IssueState;
 
     use super::run;
 
@@ -288,6 +444,54 @@ mod tests {
 
         assert!(error.contains("already exists"));
         assert_eq!(fs::read_to_string(&path).unwrap(), "preserve this file");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn status_explains_when_no_local_session_exists() {
+        let directory = temporary_directory("status-empty");
+
+        assert_eq!(
+            run(["status"], &directory).unwrap(),
+            "status: no active local sessions"
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn status_shows_the_requested_session_and_next_action() {
+        let directory = temporary_directory("status-session");
+        let session = SessionRecord::new(70, IssueState::InProgress, "feat/70-readiness");
+        SessionStore::new(&directory).save(&session).unwrap();
+
+        let output = run(["status", "70"], &directory).unwrap();
+
+        assert!(output.contains("issue #70"));
+        assert!(output.contains("state: in-progress"));
+        assert!(output.contains("branch: feat/70-readiness"));
+        assert!(output.contains("next action: run verification and prepare review"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn verify_runs_configured_checks_and_reports_a_pass() {
+        let directory = temporary_directory("verify");
+        let mut configuration = Config::new("octo-org/conveyor", "main");
+        configuration.checks.push(Check {
+            name: "always passes".to_owned(),
+            command: "true".to_owned(),
+            required: true,
+        });
+        fs::write(
+            directory.join(".conveyor.toml"),
+            configuration.to_toml().unwrap(),
+        )
+        .unwrap();
+
+        let output = run(["verify"], &directory).unwrap();
+
+        assert!(output.contains("verification: passed"));
+        assert!(output.contains("always passes: passed"));
         fs::remove_dir_all(directory).unwrap();
     }
 }
