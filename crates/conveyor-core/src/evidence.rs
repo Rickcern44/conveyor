@@ -9,6 +9,7 @@ use std::fmt;
 pub struct EvidenceReport {
     pub revision: String,
     pub verification: VerificationReport,
+    pub waiver_by: Option<String>,
 }
 
 impl EvidenceReport {
@@ -16,12 +17,18 @@ impl EvidenceReport {
         Self {
             revision: revision.into(),
             verification,
+            waiver_by: None,
         }
     }
 
     /// True when this report was produced for the exact revision being reviewed.
     pub fn is_for_revision(&self, revision: &str) -> bool {
         self.revision != "unknown" && self.revision == revision
+    }
+
+    /// Records the named operator who accepted failed required checks for delivery.
+    pub fn record_waiver(&mut self, operator: impl Into<String>) {
+        self.waiver_by = Some(operator.into());
     }
 
     /// Renders a stable JSON artifact suitable for local inspection or a PR body.
@@ -48,8 +55,12 @@ impl EvidenceReport {
             .collect::<Vec<_>>()
             .join(",");
         format!(
-            "{{\"revision\":{},\"passed_required_checks\":{},\"checks\":[{}]}}",
+            "{{\"revision\":{},\"waiver_by\":{},\"passed_required_checks\":{},\"checks\":[{}]}}",
             json_string(&self.revision),
+            self.waiver_by
+                .as_deref()
+                .map(json_string)
+                .unwrap_or_else(|| "null".to_owned()),
             self.verification.passes_required_checks(),
             checks
         )
@@ -77,7 +88,11 @@ impl EvidenceReport {
                 .map(parse_check)
                 .collect::<Result<Vec<_>, _>>()?
         };
-        Ok(Self::new(revision, VerificationReport { results }))
+        Ok(Self {
+            revision,
+            verification: VerificationReport { results },
+            waiver_by: optional_json_string_field(source, "waiver_by")?,
+        })
     }
 }
 
@@ -132,6 +147,19 @@ fn json_string_field(source: &str, key: &str) -> Result<String, EvidenceError> {
         .and_then(|value| value.strip_suffix('\"'))
         .map(|value| value.replace("\\\"", "\"").replace("\\\\", "\\"))
         .ok_or_else(|| EvidenceError::Invalid(format!("{key} must be a string")))
+}
+
+fn optional_json_string_field(source: &str, key: &str) -> Result<Option<String>, EvidenceError> {
+    let needle = format!("\"{key}\":");
+    if !source.contains(&needle) {
+        return Ok(None);
+    }
+    let value = json_value_field(source, key)?;
+    if value == "null" {
+        Ok(None)
+    } else {
+        json_string_field(source, key).map(Some)
+    }
 }
 
 fn json_value_field(source: &str, key: &str) -> Result<String, EvidenceError> {

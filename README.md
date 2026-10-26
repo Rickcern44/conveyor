@@ -59,6 +59,8 @@ conveyor audit 70
 the push and draft-PR plan, and requests consent unless `--yes` is supplied.
 It never creates a non-draft PR. `audit` prints the JSONL record of completed
 branch, issue, agent, push, and PR actions for the issue.
+Named verification waivers are retained in the structured evidence and audit
+trail as well as in the draft PR body.
 
 Use `--agent <name>` on `build` or `review` to select another configured
 `[[agent_commands]]` adapter for that one invocation. The configured role

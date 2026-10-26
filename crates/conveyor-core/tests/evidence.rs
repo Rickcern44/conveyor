@@ -60,3 +60,22 @@ fn identifies_evidence_from_the_expected_revision() {
     assert!(!report.is_for_revision("def456"));
     assert!(!report.is_for_revision("unknown"));
 }
+
+#[test]
+fn persists_a_named_waiver_in_structured_evidence() {
+    let mut report = EvidenceReport::new(
+        "abc123",
+        VerificationReport {
+            results: Vec::new(),
+        },
+    );
+    report.record_waiver("rick");
+
+    let json = report.to_json();
+
+    assert!(json.contains("\"waiver_by\":\"rick\""));
+    assert_eq!(
+        EvidenceReport::from_json(&json).unwrap().waiver_by,
+        Some("rick".to_owned())
+    );
+}

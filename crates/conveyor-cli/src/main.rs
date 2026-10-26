@@ -82,9 +82,12 @@ fn pr(arguments: &[String], directory: &Path) -> Result<String, String> {
     };
     let issue_number = parse_issue_number(number)?;
     let configuration = load_config(directory)?;
-    let evidence = read_latest_evidence(directory)?;
+    let mut evidence = read_latest_evidence(directory)?;
     ensure_evidence_is_current(directory, &evidence)?;
-    let decision = decide(&evidence.verification, waiver_by);
+    let decision = decide(
+        &evidence.verification,
+        waiver_by.or(evidence.waiver_by.as_deref()),
+    );
     if decision == PrDecision::Blocked {
         return Err(
             "required checks failed; run `conveyor verify` or use --waive-by <name>".to_owned(),
@@ -101,9 +104,9 @@ fn pr(arguments: &[String], directory: &Path) -> Result<String, String> {
             review_path.display()
         ));
     }
-    let waiver_summary = match decision {
+    let waiver_summary = match &decision {
         PrDecision::Allowed => "none".to_owned(),
-        PrDecision::AllowedWithWaiver(operator) => operator,
+        PrDecision::AllowedWithWaiver(operator) => operator.clone(),
         PrDecision::Blocked => unreachable!(),
     };
     let review_body = std::fs::read_to_string(&review_path)
@@ -130,6 +133,11 @@ fn pr(arguments: &[String], directory: &Path) -> Result<String, String> {
         && authorize(explicit_yes, &TerminalPrompt, &summary) == Decision::Declined
     {
         return Err("PR creation cancelled; no push or PR action was made".to_owned());
+    }
+    if let PrDecision::AllowedWithWaiver(operator) = &decision {
+        evidence.record_waiver(operator);
+        write_evidence(directory, &evidence)?;
+        record_audit(directory, issue_number, "waive_verification", operator)?;
     }
     run_command(
         "git",
@@ -839,9 +847,12 @@ fn render_session(session: &SessionRecord, directory: &Path) -> String {
     let blocker = session.blocker.as_deref().unwrap_or("none");
     let current_branch = current_branch(directory).unwrap_or_else(|_| "unknown".to_owned());
     let required_checks = match read_latest_evidence(directory) {
-        Ok(evidence) if evidence.verification.passes_required_checks() => "passed",
-        Ok(_) => "failed",
-        Err(_) => "not run",
+        Ok(evidence) if evidence.verification.passes_required_checks() => "passed".to_owned(),
+        Ok(evidence) if evidence.waiver_by.is_some() => {
+            format!("waived by {}", evidence.waiver_by.unwrap_or_default())
+        }
+        Ok(_) => "failed".to_owned(),
+        Err(_) => "not run".to_owned(),
     };
     let agent = match (&session.agent_command, session.agent_exit_code) {
         (Some(command), Some(code)) => format!("{command} (exit: {code})"),

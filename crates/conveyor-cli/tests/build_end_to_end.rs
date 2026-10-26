@@ -1,7 +1,7 @@
 use std::fs;
 use std::process::Command;
 
-use conveyor_core::config::{AgentCommand, Config};
+use conveyor_core::config::{AgentCommand, Check, Config};
 
 fn command(program: &str, arguments: &[&str], directory: &std::path::Path) {
     let output = Command::new(program)
@@ -111,6 +111,11 @@ exit 1
         program: "sh".to_owned(),
         args: vec!["-c".to_owned(), "test -f {packet_path}".to_owned()],
     });
+    configuration.checks.push(Check {
+        name: "intentional failure".to_owned(),
+        command: "false".to_owned(),
+        required: true,
+    });
     configuration.agent_commands.push(AgentCommand {
         name: "fixture-reviewer".to_owned(),
         program: "sh".to_owned(),
@@ -188,7 +193,7 @@ exit 1
     );
     assert!(String::from_utf8_lossy(&review.stdout).contains("reviewer completed"));
     let pr = Command::new(env!("CARGO_BIN_EXE_conveyor"))
-        .args(["pr", "open", "70", "--yes"])
+        .args(["pr", "open", "70", "--waive-by", "rick", "--yes"])
         .current_dir(&repository)
         .env("PATH", format!("{}:{previous_path}", binaries.display()))
         .env("CONVEYOR_GH_LOG", &gh_log)
@@ -203,7 +208,12 @@ exit 1
     assert!(
         fs::read_to_string(repository.join(".conveyor/reviews/70-delivery.md"))
             .unwrap()
-            .contains("Verification waiver: none")
+            .contains("Verification waiver: rick")
+    );
+    assert!(
+        fs::read_to_string(repository.join(".conveyor/reports/latest.json"))
+            .unwrap()
+            .contains("\"waiver_by\":\"rick\"")
     );
     assert!(fs::read_to_string(&gh_log).unwrap().contains("pr create"));
     let audit = fs::read_to_string(repository.join(".conveyor/audit/70.jsonl")).unwrap();
@@ -212,6 +222,7 @@ exit 1
         "transition_issue",
         "run_implementer",
         "run_reviewer",
+        "waive_verification",
         "push_branch",
         "open_draft_pr",
     ] {
