@@ -10,6 +10,8 @@ use conveyor_core::confirmation::{ConfirmationPrompt, Decision, authorize};
 use conveyor_core::doctor::{Doctor, FindingKind, Probe, ProbeResult};
 use conveyor_core::evidence::EvidenceReport;
 use conveyor_core::issue_contract::{from_markdown, validate};
+use conveyor_core::pr_gate::{PrDecision, decide};
+use conveyor_core::review_packet::ReviewPacket;
 use conveyor_core::session::{SessionRecord, SessionStore};
 use conveyor_core::task_packet::{AgentRole, TaskPacket};
 use conveyor_core::verification::{
@@ -52,8 +54,176 @@ where
         "verify" => verify_command(&arguments[1..], directory),
         "handoff" => handoff(&arguments[1..], directory),
         "build" => build(&arguments[1..], directory),
+        "review" => review(&arguments[1..], directory),
+        "pr" => pr(&arguments[1..], directory),
         "--help" | "-h" | "help" => Ok(usage().to_owned()),
         _ => Err(format!("unknown command: {command}\n\n{}", usage())),
+    }
+}
+
+fn pr(arguments: &[String], directory: &Path) -> Result<String, String> {
+    let (number, explicit_yes, waiver_by) = match arguments {
+        [command, number] if command == "open" => (number.as_str(), false, None),
+        [command, number, flag] if command == "open" && flag == "--yes" => {
+            (number.as_str(), true, None)
+        }
+        [command, number, waiver, operator] if command == "open" && waiver == "--waive-by" => {
+            (number.as_str(), false, Some(operator.as_str()))
+        }
+        [command, number, waiver, operator, flag]
+            if command == "open" && waiver == "--waive-by" && flag == "--yes" =>
+        {
+            (number.as_str(), true, Some(operator.as_str()))
+        }
+        _ => return Err("Usage: conveyor pr open <number> [--waive-by <name>] [--yes]".to_owned()),
+    };
+    let issue_number = parse_issue_number(number)?;
+    let configuration = load_config(directory)?;
+    let evidence = read_latest_evidence(directory)?;
+    let decision = decide(&evidence.verification, waiver_by);
+    if decision == PrDecision::Blocked {
+        return Err(
+            "required checks failed; run `conveyor verify` or use --waive-by <name>".to_owned(),
+        );
+    }
+    let branch = current_branch(directory)?;
+    if branch == configuration.conveyor.target_branch {
+        return Err("cannot open a PR from the target branch".to_owned());
+    }
+    let review_path = directory.join(format!(".conveyor/reviews/{issue_number}.md"));
+    if !review_path.is_file() {
+        return Err(format!(
+            "missing {}; run `conveyor review {issue_number}` first",
+            review_path.display()
+        ));
+    }
+    let waiver_summary = match decision {
+        PrDecision::Allowed => "none".to_owned(),
+        PrDecision::AllowedWithWaiver(operator) => operator,
+        PrDecision::Blocked => unreachable!(),
+    };
+    let summary = format!(
+        "Push branch: {branch}\nCreate draft PR: {branch} -> {}\nIssue: #{issue_number}\nVerification waiver: {waiver_summary}",
+        configuration.conveyor.target_branch
+    );
+    if authorize(explicit_yes, &TerminalPrompt, &summary) == Decision::Declined {
+        return Err("PR creation cancelled; no push or PR action was made".to_owned());
+    }
+    run_command(
+        "git",
+        ["push", "-u", "origin", &branch],
+        directory,
+        "could not push branch",
+    )?;
+    let title = format!("Conveyor: issue #{issue_number}");
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "create",
+            "--repo",
+            &configuration.github.repository,
+            "--draft",
+            "--base",
+            &configuration.conveyor.target_branch,
+            "--head",
+            &branch,
+            "--title",
+            &title,
+            "--body-file",
+            review_path
+                .to_str()
+                .ok_or("review path is not valid UTF-8")?,
+        ])
+        .current_dir(directory)
+        .output()
+        .map_err(|error| format!("could not run gh: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "could not create draft PR: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(format!(
+        "created draft PR: {}",
+        String::from_utf8_lossy(&output.stdout).trim()
+    ))
+}
+
+fn read_latest_evidence(directory: &Path) -> Result<EvidenceReport, String> {
+    let source = std::fs::read_to_string(directory.join(".conveyor/reports/latest.json"))
+        .map_err(|error| format!("could not read latest verification evidence: {error}"))?;
+    EvidenceReport::from_json(&source)
+        .map_err(|error| format!("could not parse latest verification evidence: {error}"))
+}
+
+fn current_branch(directory: &Path) -> Result<String, String> {
+    git_output(
+        ["branch", "--show-current"],
+        directory,
+        "could not inspect current branch",
+    )
+}
+
+fn review(arguments: &[String], directory: &Path) -> Result<String, String> {
+    let [number] = arguments else {
+        return Err("Usage: conveyor review <number>".to_owned());
+    };
+    let issue_number = parse_issue_number(number)?;
+    let configuration = load_config(directory)?;
+    let contract = from_markdown(&fetch_issue_body(number, directory)?);
+    let source = std::fs::read_to_string(directory.join(".conveyor/reports/latest.json"))
+        .map_err(|error| format!("could not read latest verification evidence: {error}"))?;
+    let evidence = EvidenceReport::from_json(&source)
+        .map_err(|error| format!("could not parse latest verification evidence: {error}"))?;
+    let diff_summary = git_output(
+        [
+            "diff",
+            "--stat",
+            &format!("{}...HEAD", configuration.conveyor.target_branch),
+        ],
+        directory,
+        "could not summarize diff",
+    )?;
+    let packet = ReviewPacket {
+        issue_number,
+        contract,
+        diff_summary,
+        evidence,
+    };
+    let path = write_review_packet(directory, &packet)?;
+    Ok(format!("created review packet: {}", path.display()))
+}
+
+fn write_review_packet(
+    directory: &Path,
+    packet: &ReviewPacket,
+) -> Result<std::path::PathBuf, String> {
+    let reviews = directory.join(".conveyor/reviews");
+    std::fs::create_dir_all(&reviews)
+        .map_err(|error| format!("could not create {}: {error}", reviews.display()))?;
+    let path = reviews.join(format!("{}.md", packet.issue_number));
+    std::fs::write(&path, packet.to_markdown())
+        .map_err(|error| format!("could not write {}: {error}", path.display()))?;
+    Ok(path)
+}
+
+fn git_output<const N: usize>(
+    arguments: [&str; N],
+    directory: &Path,
+    context: &str,
+) -> Result<String, String> {
+    let output = Command::new("git")
+        .args(arguments)
+        .current_dir(directory)
+        .output()
+        .map_err(|error| format!("{context}: {error}"))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    } else {
+        Err(format!(
+            "{context}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
     }
 }
 
@@ -718,7 +888,7 @@ fn initialize(arguments: &[String], directory: &Path) -> Result<String, String> 
 }
 
 fn usage() -> &'static str {
-    "Usage:\n  conveyor init --repository <owner/repository> [--target-branch <branch>]\n  conveyor doctor\n  conveyor status [issue]\n  conveyor issue validate <number> [--format human|json]\n  conveyor handoff <number> --role <planner|implementer|reviewer>\n  conveyor build <number> [--yes]\n  conveyor verify [--format human|json]"
+    "Usage:\n  conveyor init --repository <owner/repository> [--target-branch <branch>]\n  conveyor doctor\n  conveyor status [issue]\n  conveyor issue validate <number> [--format human|json]\n  conveyor handoff <number> --role <planner|implementer|reviewer>\n  conveyor build <number> [--yes]\n  conveyor verify [--format human|json]\n  conveyor review <number>\n  conveyor pr open <number> [--waive-by <name>] [--yes]"
 }
 
 #[cfg(test)]
