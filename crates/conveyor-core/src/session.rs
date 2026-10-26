@@ -16,6 +16,8 @@ pub struct SessionRecord {
     pub blocker: Option<String>,
     pub agent_command: Option<String>,
     pub agent_exit_code: Option<i32>,
+    pub require_push_confirmation: bool,
+    pub require_pr_confirmation: bool,
 }
 
 impl SessionRecord {
@@ -27,6 +29,8 @@ impl SessionRecord {
             blocker: None,
             agent_command: None,
             agent_exit_code: None,
+            require_push_confirmation: true,
+            require_pr_confirmation: true,
         }
     }
 
@@ -34,6 +38,12 @@ impl SessionRecord {
     pub fn record_agent_outcome(&mut self, command: impl Into<String>, exit_code: Option<i32>) {
         self.agent_command = Some(command.into());
         self.agent_exit_code = exit_code;
+    }
+
+    /// Snapshots delivery consent policy when the work session begins.
+    pub fn set_delivery_confirmation_policy(&mut self, push: bool, open_pr: bool) {
+        self.require_push_confirmation = push;
+        self.require_pr_confirmation = open_pr;
     }
 }
 
@@ -137,13 +147,15 @@ fn serialize(record: &SessionRecord) -> String {
         .agent_exit_code
         .map_or_else(|| "null".to_owned(), |code| code.to_string());
     format!(
-        "{{\n  \"issue_number\": {},\n  \"state\": {},\n  \"branch\": {},\n  \"blocker\": {},\n  \"agent_command\": {},\n  \"agent_exit_code\": {}\n}}\n",
+        "{{\n  \"issue_number\": {},\n  \"state\": {},\n  \"branch\": {},\n  \"blocker\": {},\n  \"agent_command\": {},\n  \"agent_exit_code\": {},\n  \"require_push_confirmation\": {},\n  \"require_pr_confirmation\": {}\n}}\n",
         record.issue_number,
         json_string(record.state.as_str()),
         json_string(&record.branch),
         blocker,
         agent_command,
-        agent_exit_code
+        agent_exit_code,
+        record.require_push_confirmation,
+        record.require_pr_confirmation
     )
 }
 
@@ -171,6 +183,14 @@ fn deserialize(source: &str) -> Result<SessionRecord, SessionError> {
             })
         })
         .transpose()?;
+    let require_push_confirmation = optional_value(source, "require_push_confirmation")?
+        .map(parse_bool)
+        .transpose()?
+        .unwrap_or(true);
+    let require_pr_confirmation = optional_value(source, "require_pr_confirmation")?
+        .map(parse_bool)
+        .transpose()?
+        .unwrap_or(true);
     Ok(SessionRecord {
         issue_number,
         state,
@@ -178,7 +198,19 @@ fn deserialize(source: &str) -> Result<SessionRecord, SessionError> {
         blocker,
         agent_command,
         agent_exit_code,
+        require_push_confirmation,
+        require_pr_confirmation,
     })
+}
+
+fn parse_bool(value: &str) -> Result<bool, SessionError> {
+    match value {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(SessionError::InvalidRecord(format!(
+            "expected boolean: {value}"
+        ))),
+    }
 }
 
 fn value<'a>(source: &'a str, key: &str) -> Result<&'a str, SessionError> {

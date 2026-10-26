@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use conveyor_core::agent_adapter::{CommandTemplate, TemplateContext};
 use conveyor_core::audit::{AuditEvent, AuditLog};
 use conveyor_core::build_plan::{BuildInput, prepare};
-use conveyor_core::config::Config;
+use conveyor_core::config::{Config, ConfirmationAction};
 use conveyor_core::confirmation::{ConfirmationPrompt, Decision, authorize};
 use conveyor_core::doctor::{Doctor, FindingKind, Probe, ProbeResult};
 use conveyor_core::evidence::EvidenceReport;
@@ -117,7 +117,17 @@ fn pr(arguments: &[String], directory: &Path) -> Result<String, String> {
         "Push branch: {branch}\nCreate draft PR: {branch} -> {}\nIssue: #{issue_number}\nVerification waiver: {waiver_summary}",
         configuration.conveyor.target_branch
     );
-    if authorize(explicit_yes, &TerminalPrompt, &summary) == Decision::Declined {
+    let active_session = SessionStore::new(directory)
+        .load(issue_number)
+        .map_err(|error| error.to_string())?;
+    let confirmation_required = configuration.requires_confirmation(ConfirmationAction::Push)
+        || configuration.requires_confirmation(ConfirmationAction::OpenPr)
+        || active_session.as_ref().is_some_and(|session| {
+            session.require_push_confirmation || session.require_pr_confirmation
+        });
+    if confirmation_required
+        && authorize(explicit_yes, &TerminalPrompt, &summary) == Decision::Declined
+    {
         return Err("PR creation cancelled; no push or PR action was made".to_owned());
     }
     run_command(
@@ -181,9 +191,7 @@ fn current_branch(directory: &Path) -> Result<String, String> {
 }
 
 fn review(arguments: &[String], directory: &Path) -> Result<String, String> {
-    let [number] = arguments else {
-        return Err("Usage: conveyor review <number>".to_owned());
-    };
+    let (number, requested_agent) = parse_review_arguments(arguments)?;
     let issue_number = parse_issue_number(number)?;
     let configuration = load_config(directory)?;
     let contract = from_markdown(&fetch_issue_body(number, directory)?);
@@ -207,7 +215,8 @@ fn review(arguments: &[String], directory: &Path) -> Result<String, String> {
         evidence,
     };
     let path = write_review_packet(directory, &packet)?;
-    let Some(command) = configuration.agent_command(&configuration.agents.reviewer) else {
+    let agent_name = requested_agent.unwrap_or(&configuration.agents.reviewer);
+    let Some(command) = configuration.agent_command(agent_name) else {
         return Ok(format!("created review packet: {}", path.display()));
     };
     let invocation = CommandTemplate {
@@ -273,12 +282,42 @@ fn git_output<const N: usize>(
     }
 }
 
-fn build(arguments: &[String], directory: &Path) -> Result<String, String> {
-    let (number, explicit_yes) = match arguments {
-        [number] => (number.as_str(), false),
-        [number, flag] if flag == "--yes" => (number.as_str(), true),
-        _ => return Err("Usage: conveyor build <number> [--yes]".to_owned()),
+fn parse_build_arguments(arguments: &[String]) -> Result<(&str, bool, Option<&str>), String> {
+    let Some(number) = arguments.first() else {
+        return Err("Usage: conveyor build <number> [--agent <name>] [--yes]".to_owned());
     };
+    let mut explicit_yes = false;
+    let mut requested_agent = None;
+    let mut index = 1;
+    while index < arguments.len() {
+        match arguments[index].as_str() {
+            "--yes" if !explicit_yes => explicit_yes = true,
+            "--agent" if requested_agent.is_none() => {
+                let Some(agent) = arguments.get(index + 1) else {
+                    return Err("--agent requires a configured agent name".to_owned());
+                };
+                requested_agent = Some(agent.as_str());
+                index += 1;
+            }
+            _ => {
+                return Err("Usage: conveyor build <number> [--agent <name>] [--yes]".to_owned());
+            }
+        }
+        index += 1;
+    }
+    Ok((number, explicit_yes, requested_agent))
+}
+
+fn parse_review_arguments(arguments: &[String]) -> Result<(&str, Option<&str>), String> {
+    match arguments {
+        [number] => Ok((number, None)),
+        [number, option, agent] if option == "--agent" => Ok((number, Some(agent))),
+        _ => Err("Usage: conveyor review <number> [--agent <name>]".to_owned()),
+    }
+}
+
+fn build(arguments: &[String], directory: &Path) -> Result<String, String> {
+    let (number, explicit_yes, requested_agent) = parse_build_arguments(arguments)?;
     let issue_number = parse_issue_number(number)?;
     let configuration = load_config(directory)?;
     let labels = issue_labels(number, &configuration, directory)?;
@@ -314,12 +353,12 @@ fn build(arguments: &[String], directory: &Path) -> Result<String, String> {
                 .join("\n")
         ));
     }
+    let agent_name = requested_agent.unwrap_or(&configuration.agents.implementer);
     let command = configuration
-        .agent_command(&configuration.agents.implementer)
+        .agent_command(agent_name)
         .ok_or_else(|| {
             format!(
-                "no [[agent_commands]] entry named `{}` is configured for the implementer role",
-                configuration.agents.implementer
+                "no [[agent_commands]] entry named `{agent_name}` is configured for the implementer"
             )
         })?
         .clone();
@@ -357,6 +396,10 @@ fn build(arguments: &[String], directory: &Path) -> Result<String, String> {
     )?;
     let store = SessionStore::new(directory);
     let mut session = SessionRecord::new(issue_number, plan.next_state, &plan.branch);
+    session.set_delivery_confirmation_policy(
+        configuration.requires_confirmation(ConfirmationAction::Push),
+        configuration.requires_confirmation(ConfirmationAction::OpenPr),
+    );
     store.save(&session).map_err(|error| {
         format!("branch and issue updated, but session could not be saved: {error}")
     })?;
@@ -1010,7 +1053,7 @@ fn initialize(arguments: &[String], directory: &Path) -> Result<String, String> 
 }
 
 fn usage() -> &'static str {
-    "Usage:\n  conveyor init --repository <owner/repository> [--target-branch <branch>]\n  conveyor doctor\n  conveyor status [issue]\n  conveyor issue validate <number> [--format human|json]\n  conveyor handoff <number> --role <planner|implementer|reviewer>\n  conveyor build <number> [--yes]\n  conveyor verify [--format human|json]\n  conveyor review <number>\n  conveyor pr open <number> [--waive-by <name>] [--yes]\n  conveyor audit <number>"
+    "Usage:\n  conveyor init --repository <owner/repository> [--target-branch <branch>]\n  conveyor doctor\n  conveyor status [issue]\n  conveyor issue validate <number> [--format human|json]\n  conveyor handoff <number> --role <planner|implementer|reviewer>\n  conveyor build <number> [--agent <name>] [--yes]\n  conveyor verify [--format human|json]\n  conveyor review <number> [--agent <name>]\n  conveyor pr open <number> [--waive-by <name>] [--yes]\n  conveyor audit <number>"
 }
 
 #[cfg(test)]
@@ -1022,7 +1065,7 @@ mod tests {
     use conveyor_core::task_packet::{AgentRole, TaskPacket};
     use conveyor_core::workflow::IssueState;
 
-    use super::{run, write_packet};
+    use super::{parse_build_arguments, parse_review_arguments, run, write_packet};
 
     fn temporary_directory(name: &str) -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!("conveyor-cli-{name}-{}", std::process::id()));
@@ -1052,6 +1095,33 @@ mod tests {
         assert!(configuration.contains("target_branch = \"trunk\""));
         assert!(configuration.contains("draft_prs_only = true"));
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn build_arguments_accept_an_agent_and_yes_in_either_order() {
+        let arguments = [
+            "70".to_owned(),
+            "--yes".to_owned(),
+            "--agent".to_owned(),
+            "local".to_owned(),
+        ];
+        let parsed = parse_build_arguments(&arguments).unwrap();
+
+        assert_eq!(parsed, ("70", true, Some("local")));
+        assert!(parse_build_arguments(&["70".to_owned(), "--agent".to_owned()]).is_err());
+    }
+
+    #[test]
+    fn review_arguments_optionally_select_a_configured_agent() {
+        assert_eq!(
+            parse_review_arguments(&[
+                "70".to_owned(),
+                "--agent".to_owned(),
+                "local-reviewer".to_owned(),
+            ])
+            .unwrap(),
+            ("70", Some("local-reviewer"))
+        );
     }
 
     #[test]

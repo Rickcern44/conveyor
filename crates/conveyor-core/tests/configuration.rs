@@ -38,6 +38,15 @@ fn rejects_a_branch_pattern_without_an_issue_placeholder() {
 }
 
 #[test]
+fn confirmation_policy_can_be_queried_for_each_delivery_action() {
+    let mut config = Config::new("octo-org/conveyor", "main");
+    config.workflow.require_confirmation_for = vec![ConfirmationAction::OpenPr];
+
+    assert!(!config.requires_confirmation(ConfirmationAction::Push));
+    assert!(config.requires_confirmation(ConfirmationAction::OpenPr));
+}
+
+#[test]
 fn configuration_round_trips_as_toml() {
     let mut config = Config::new("octo-org/conveyor", "main");
     config.checks.push(Check {

@@ -130,6 +130,12 @@ impl Config {
             .find(|command| command.name == name)
     }
 
+    /// Whether this repository requires an explicit operator confirmation for
+    /// the specified delivery action.
+    pub fn requires_confirmation(&self, action: ConfirmationAction) -> bool {
+        self.workflow.require_confirmation_for.contains(&action)
+    }
+
     /// Expands the repository's conventional branch name for one issue.
     pub fn branch_for_issue(&self, issue_number: u64) -> Result<String, ConfigError> {
         validate_branch_pattern(&self.conveyor.branch_pattern)?;

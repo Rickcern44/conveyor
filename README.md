@@ -60,6 +60,10 @@ the push and draft-PR plan, and requests consent unless `--yes` is supplied.
 It never creates a non-draft PR. `audit` prints the JSONL record of completed
 branch, issue, agent, push, and PR actions for the issue.
 
+Use `--agent <name>` on `build` or `review` to select another configured
+`[[agent_commands]]` adapter for that one invocation. The configured role
+default remains in effect when the option is omitted.
+
 The default branch convention is `feat/{issue}-build`. Configure a repository
 specific pattern in `.conveyor.toml`; it must include `{issue}` and contain no
 whitespace:
