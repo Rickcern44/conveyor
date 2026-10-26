@@ -427,10 +427,27 @@ fn build(arguments: &[String], directory: &Path) -> Result<String, String> {
         "could not create build branch",
     )?;
     record_audit(directory, issue_number, "create_branch", &plan.branch)?;
+    let store = SessionStore::new(directory);
     if let Err(error) = transition_issue_to_in_progress(number, &configuration, directory) {
+        let mut recovery = SessionRecord::new(issue_number, IssueState::InProgress, &plan.branch);
+        recovery.set_delivery_confirmation_policy(
+            configuration.requires_confirmation(ConfirmationAction::Push),
+            configuration.requires_confirmation(ConfirmationAction::OpenPr),
+        );
+        let reason = format!("GitHub label transition failed after branch creation: {error}");
+        recovery
+            .block(&reason, "local-operator")
+            .expect("in-progress sessions may be blocked");
+        let recovery_note = match store.save(&recovery) {
+            Ok(()) => {
+                let _ = record_audit(directory, issue_number, "record_blocker", &reason);
+                format!(" A blocked recovery session was saved for issue #{issue_number}.")
+            }
+            Err(save_error) => format!(" Recovery session could not be saved: {save_error}."),
+        };
         return Err(format!(
-            "branch {} was created, but the issue transition failed: {error}",
-            plan.branch
+            "branch {} was created, but the issue transition failed: {error}.{recovery_note}",
+            plan.branch,
         ));
     }
     record_audit(
@@ -442,7 +459,6 @@ fn build(arguments: &[String], directory: &Path) -> Result<String, String> {
             configuration.workflow.ready_label, configuration.workflow.in_progress_label
         ),
     )?;
-    let store = SessionStore::new(directory);
     let mut session = SessionRecord::new(issue_number, plan.next_state, &plan.branch);
     session.set_delivery_confirmation_policy(
         configuration.requires_confirmation(ConfirmationAction::Push),
