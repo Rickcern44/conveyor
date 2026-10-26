@@ -20,3 +20,11 @@ pub fn decide(report: &VerificationReport, waiver_by: Option<&str>) -> PrDecisio
         PrDecision::Blocked
     }
 }
+
+/// Appends an explicit verification-waiver record to a draft PR body.
+pub fn delivery_summary(review_packet: &str, waiver_by: Option<&str>) -> String {
+    let waiver = waiver_by
+        .filter(|operator| !operator.trim().is_empty())
+        .unwrap_or("none");
+    format!("{review_packet}\n\n## Delivery authorization\n\nVerification waiver: {waiver}\n")
+}

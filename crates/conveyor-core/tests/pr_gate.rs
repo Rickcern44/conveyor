@@ -1,4 +1,4 @@
-use conveyor_core::pr_gate::{PrDecision, decide};
+use conveyor_core::pr_gate::{PrDecision, decide, delivery_summary};
 use conveyor_core::verification::{CheckResult, Outcome, VerificationReport};
 
 fn report(outcome: Outcome) -> VerificationReport {
@@ -26,4 +26,12 @@ fn requires_a_named_waiver_when_required_checks_fail() {
         decide(&report(Outcome::Failed), Some("rick")),
         PrDecision::AllowedWithWaiver("rick".to_owned())
     );
+}
+
+#[test]
+fn delivery_summary_makes_a_waiver_auditable_in_the_pr_body() {
+    let summary = delivery_summary("# Review packet", Some("rick"));
+
+    assert!(summary.contains("# Review packet"));
+    assert!(summary.contains("Verification waiver: rick"));
 }

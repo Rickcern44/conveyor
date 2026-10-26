@@ -6,6 +6,7 @@ fn default_configuration_has_safe_delivery_policy() {
 
     assert!(config.workflow.draft_prs_only);
     assert_eq!(config.workflow.in_progress_label, "in-progress");
+    assert_eq!(config.conveyor.branch_pattern, "feat/{issue}-build");
     assert_eq!(
         config.workflow.require_confirmation_for,
         vec![
@@ -15,6 +16,25 @@ fn default_configuration_has_safe_delivery_policy() {
             ConfirmationAction::Deploy,
         ]
     );
+}
+
+#[test]
+fn expands_the_configured_branch_pattern_for_an_issue() {
+    let mut config = Config::new("octo-org/conveyor", "main");
+    config.conveyor.branch_pattern = "work/{issue}/implementation".to_owned();
+
+    assert_eq!(
+        config.branch_for_issue(70).unwrap(),
+        "work/70/implementation"
+    );
+}
+
+#[test]
+fn rejects_a_branch_pattern_without_an_issue_placeholder() {
+    let mut config = Config::new("octo-org/conveyor", "main");
+    config.conveyor.branch_pattern = "work/implementation".to_owned();
+
+    assert!(config.to_toml().is_err());
 }
 
 #[test]

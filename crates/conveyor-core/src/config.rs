@@ -17,6 +17,7 @@ pub struct Config {
 pub struct ConveyorConfig {
     pub version: u32,
     pub target_branch: String,
+    pub branch_pattern: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -95,6 +96,7 @@ impl Config {
             conveyor: ConveyorConfig {
                 version: 1,
                 target_branch: target_branch.into(),
+                branch_pattern: "feat/{issue}-build".to_owned(),
             },
             github: GithubConfig {
                 repository: repository.into(),
@@ -128,11 +130,21 @@ impl Config {
             .find(|command| command.name == name)
     }
 
+    /// Expands the repository's conventional branch name for one issue.
+    pub fn branch_for_issue(&self, issue_number: u64) -> Result<String, ConfigError> {
+        validate_branch_pattern(&self.conveyor.branch_pattern)?;
+        Ok(self
+            .conveyor
+            .branch_pattern
+            .replace("{issue}", &issue_number.to_string()))
+    }
+
     /// Serializes the supported configuration surface as stable TOML.
     pub fn to_toml(&self) -> Result<String, ConfigError> {
         if self.conveyor.version != 1 {
             return Err(ConfigError::UnsupportedVersion(self.conveyor.version));
         }
+        validate_branch_pattern(&self.conveyor.branch_pattern)?;
         let quoted_actions = self
             .workflow
             .require_confirmation_for
@@ -171,9 +183,10 @@ impl Config {
             })
             .collect::<String>();
         Ok(format!(
-            "[conveyor]\nversion = {}\ntarget_branch = {}\n\n[github]\nrepository = {}\n\n[workflow]\nready_label = {}\nin_progress_label = {}\nblocked_label = {}\ndraft_prs_only = {}\nrequire_confirmation_for = [{}]\n\n[agents]\nplanner = {}\nimplementer = {}\nreviewer = {}\n{}{}",
+            "[conveyor]\nversion = {}\ntarget_branch = {}\nbranch_pattern = {}\n\n[github]\nrepository = {}\n\n[workflow]\nready_label = {}\nin_progress_label = {}\nblocked_label = {}\ndraft_prs_only = {}\nrequire_confirmation_for = [{}]\n\n[agents]\nplanner = {}\nimplementer = {}\nreviewer = {}\n{}{}",
             self.conveyor.version,
             quote(&self.conveyor.target_branch),
+            quote(&self.conveyor.branch_pattern),
             quote(&self.github.repository),
             quote(&self.workflow.ready_label),
             quote(&self.workflow.in_progress_label),
@@ -246,10 +259,17 @@ impl Config {
             .iter()
             .map(|value| ConfirmationAction::parse(value))
             .collect::<Result<Vec<_>, _>>()?;
+        let branch_pattern = values
+            .get("conveyor.branch_pattern")
+            .map(|value| parse_string(value))
+            .transpose()?
+            .unwrap_or_else(|| "feat/{issue}-build".to_owned());
+        validate_branch_pattern(&branch_pattern)?;
         Ok(Self {
             conveyor: ConveyorConfig {
                 version,
                 target_branch: parse_string(required(&values, "conveyor.target_branch")?)?,
+                branch_pattern,
             },
             github: GithubConfig {
                 repository: parse_string(required(&values, "github.repository")?)?,
@@ -278,6 +298,20 @@ impl Config {
                 .iter()
                 .map(parse_agent_command)
                 .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+}
+
+fn validate_branch_pattern(pattern: &str) -> Result<(), ConfigError> {
+    if pattern.contains("{issue}")
+        && !pattern.is_empty()
+        && !pattern.chars().any(char::is_whitespace)
+    {
+        Ok(())
+    } else {
+        Err(ConfigError::InvalidValue {
+            key: "conveyor.branch_pattern",
+            value: pattern.to_owned(),
         })
     }
 }

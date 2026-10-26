@@ -2,15 +2,17 @@ use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::Path;
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use conveyor_core::agent_adapter::{CommandTemplate, TemplateContext};
+use conveyor_core::audit::{AuditEvent, AuditLog};
 use conveyor_core::build_plan::{BuildInput, prepare};
 use conveyor_core::config::Config;
 use conveyor_core::confirmation::{ConfirmationPrompt, Decision, authorize};
 use conveyor_core::doctor::{Doctor, FindingKind, Probe, ProbeResult};
 use conveyor_core::evidence::EvidenceReport;
 use conveyor_core::issue_contract::{from_markdown, validate};
-use conveyor_core::pr_gate::{PrDecision, decide};
+use conveyor_core::pr_gate::{PrDecision, decide, delivery_summary};
 use conveyor_core::review_packet::ReviewPacket;
 use conveyor_core::session::{SessionRecord, SessionStore};
 use conveyor_core::task_packet::{AgentRole, TaskPacket};
@@ -56,6 +58,7 @@ where
         "build" => build(&arguments[1..], directory),
         "review" => review(&arguments[1..], directory),
         "pr" => pr(&arguments[1..], directory),
+        "audit" => audit(&arguments[1..], directory),
         "--help" | "-h" | "help" => Ok(usage().to_owned()),
         _ => Err(format!("unknown command: {command}\n\n{}", usage())),
     }
@@ -102,6 +105,14 @@ fn pr(arguments: &[String], directory: &Path) -> Result<String, String> {
         PrDecision::AllowedWithWaiver(operator) => operator,
         PrDecision::Blocked => unreachable!(),
     };
+    let review_body = std::fs::read_to_string(&review_path)
+        .map_err(|error| format!("could not read {}: {error}", review_path.display()))?;
+    let delivery_path = review_path.with_file_name(format!("{issue_number}-delivery.md"));
+    std::fs::write(
+        &delivery_path,
+        delivery_summary(&review_body, Some(&waiver_summary)),
+    )
+    .map_err(|error| format!("could not write {}: {error}", delivery_path.display()))?;
     let summary = format!(
         "Push branch: {branch}\nCreate draft PR: {branch} -> {}\nIssue: #{issue_number}\nVerification waiver: {waiver_summary}",
         configuration.conveyor.target_branch
@@ -114,6 +125,12 @@ fn pr(arguments: &[String], directory: &Path) -> Result<String, String> {
         ["push", "-u", "origin", &branch],
         directory,
         "could not push branch",
+    )?;
+    record_audit(
+        directory,
+        issue_number,
+        "push_branch",
+        format!("origin/{branch}"),
     )?;
     let title = format!("Conveyor: issue #{issue_number}");
     let output = Command::new("gh")
@@ -130,9 +147,9 @@ fn pr(arguments: &[String], directory: &Path) -> Result<String, String> {
             "--title",
             &title,
             "--body-file",
-            review_path
+            delivery_path
                 .to_str()
-                .ok_or("review path is not valid UTF-8")?,
+                .ok_or("delivery summary path is not valid UTF-8")?,
         ])
         .current_dir(directory)
         .output()
@@ -143,10 +160,9 @@ fn pr(arguments: &[String], directory: &Path) -> Result<String, String> {
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
-    Ok(format!(
-        "created draft PR: {}",
-        String::from_utf8_lossy(&output.stdout).trim()
-    ))
+    let pr_target = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    record_audit(directory, issue_number, "open_draft_pr", &pr_target)?;
+    Ok(format!("created draft PR: {}", pr_target))
 }
 
 fn read_latest_evidence(directory: &Path) -> Result<EvidenceReport, String> {
@@ -217,6 +233,7 @@ fn review(arguments: &[String], directory: &Path) -> Result<String, String> {
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
+    record_audit(directory, issue_number, "run_reviewer", &invocation.program)?;
     Ok(format!(
         "created review packet: {}; reviewer completed",
         path.display()
@@ -279,7 +296,9 @@ fn build(arguments: &[String], directory: &Path) -> Result<String, String> {
         state,
         worktree_clean: worktree_is_clean(directory)?,
         worktree_up_to_date: worktree_is_up_to_date(directory)?,
-        branch: format!("feat/{issue_number}-build"),
+        branch: configuration
+            .branch_for_issue(issue_number)
+            .map_err(|error| error.to_string())?,
     })
     .map_err(|error| error.to_string())?;
     let contract = from_markdown(&fetch_issue_body(number, directory)?);
@@ -320,12 +339,22 @@ fn build(arguments: &[String], directory: &Path) -> Result<String, String> {
         directory,
         "could not create build branch",
     )?;
+    record_audit(directory, issue_number, "create_branch", &plan.branch)?;
     if let Err(error) = transition_issue_to_in_progress(number, &configuration, directory) {
         return Err(format!(
             "branch {} was created, but the issue transition failed: {error}",
             plan.branch
         ));
     }
+    record_audit(
+        directory,
+        issue_number,
+        "transition_issue",
+        format!(
+            "#{issue_number}: {} -> {}",
+            configuration.workflow.ready_label, configuration.workflow.in_progress_label
+        ),
+    )?;
     let store = SessionStore::new(directory);
     let mut session = SessionRecord::new(issue_number, plan.next_state, &plan.branch);
     store.save(&session).map_err(|error| {
@@ -374,6 +403,12 @@ fn build(arguments: &[String], directory: &Path) -> Result<String, String> {
     store
         .save(&session)
         .map_err(|error| format!("agent ran, but its outcome could not be saved: {error}"))?;
+    record_audit(
+        directory,
+        issue_number,
+        "run_implementer",
+        &invocation.program,
+    )?;
     if !output.status.success() {
         return Err(format!(
             "implementer exited unsuccessfully: {}",
@@ -555,7 +590,9 @@ fn handoff(arguments: &[String], directory: &Path) -> Result<String, String> {
     let packet = TaskPacket::new(
         issue_number,
         role,
-        format!("feat/{issue_number}-{}", role.as_str()),
+        configuration
+            .branch_for_issue(issue_number)
+            .map_err(|error| error.to_string())?,
         contract,
         guidance,
         configuration.checks,
@@ -670,6 +707,42 @@ fn render_verification_human(report: &VerificationReport) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     format!("verification: {status}\n{checks}")
+}
+
+fn audit(arguments: &[String], directory: &Path) -> Result<String, String> {
+    let [number] = arguments else {
+        return Err("Usage: conveyor audit <number>".to_owned());
+    };
+    let issue_number = parse_issue_number(number)?;
+    let path = directory.join(format!(".conveyor/audit/{issue_number}.jsonl"));
+    std::fs::read_to_string(&path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            format!("audit: no local events for issue #{issue_number}")
+        } else {
+            format!("could not read {}: {error}", path.display())
+        }
+    })
+}
+
+fn record_audit(
+    directory: &Path,
+    issue_number: u64,
+    action: &str,
+    target: impl Into<String>,
+) -> Result<(), String> {
+    let timestamp_unix_seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| format!("could not record audit timestamp: {error}"))?
+        .as_secs();
+    let actor = std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_else(|_| "local-operator".to_owned());
+    AuditLog::new(directory)
+        .append(
+            issue_number,
+            &AuditEvent::new(action, target, actor, timestamp_unix_seconds),
+        )
+        .map_err(|error| format!("action completed but audit recording failed: {error}"))
 }
 
 fn status(arguments: &[String], directory: &Path) -> Result<String, String> {
@@ -937,7 +1010,7 @@ fn initialize(arguments: &[String], directory: &Path) -> Result<String, String> 
 }
 
 fn usage() -> &'static str {
-    "Usage:\n  conveyor init --repository <owner/repository> [--target-branch <branch>]\n  conveyor doctor\n  conveyor status [issue]\n  conveyor issue validate <number> [--format human|json]\n  conveyor handoff <number> --role <planner|implementer|reviewer>\n  conveyor build <number> [--yes]\n  conveyor verify [--format human|json]\n  conveyor review <number>\n  conveyor pr open <number> [--waive-by <name>] [--yes]"
+    "Usage:\n  conveyor init --repository <owner/repository> [--target-branch <branch>]\n  conveyor doctor\n  conveyor status [issue]\n  conveyor issue validate <number> [--format human|json]\n  conveyor handoff <number> --role <planner|implementer|reviewer>\n  conveyor build <number> [--yes]\n  conveyor verify [--format human|json]\n  conveyor review <number>\n  conveyor pr open <number> [--waive-by <name>] [--yes]\n  conveyor audit <number>"
 }
 
 #[cfg(test)]

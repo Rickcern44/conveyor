@@ -154,6 +154,9 @@ exit 1
         "feat/70-build"
     );
     assert!(repository.join(".conveyor/sessions/70.json").is_file());
+    let session = fs::read_to_string(repository.join(".conveyor/sessions/70.json")).unwrap();
+    assert!(session.contains("\"agent_command\": \"sh -c test -f"));
+    assert!(session.contains("\"agent_exit_code\": 0"));
     assert!(
         repository
             .join(".conveyor/packets/70-implementer.md")
@@ -197,6 +200,22 @@ exit 1
         String::from_utf8_lossy(&pr.stderr)
     );
     assert!(repository.join(".conveyor/reviews/70.md").is_file());
+    assert!(
+        fs::read_to_string(repository.join(".conveyor/reviews/70-delivery.md"))
+            .unwrap()
+            .contains("Verification waiver: none")
+    );
     assert!(fs::read_to_string(&gh_log).unwrap().contains("pr create"));
+    let audit = fs::read_to_string(repository.join(".conveyor/audit/70.jsonl")).unwrap();
+    for action in [
+        "create_branch",
+        "transition_issue",
+        "run_implementer",
+        "run_reviewer",
+        "push_branch",
+        "open_draft_pr",
+    ] {
+        assert!(audit.contains(&format!("\"action\":\"{action}\"")));
+    }
     fs::remove_dir_all(root).unwrap();
 }

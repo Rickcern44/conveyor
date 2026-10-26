@@ -14,7 +14,7 @@ cargo test --workspace
 cargo run -p conveyor-cli --bin conveyor -- --help
 ```
 
-## First-slice commands
+## Workflow commands
 
 Initialize a consumer repository with versioned, safe defaults:
 
@@ -38,10 +38,36 @@ conveyor issue validate 70
 conveyor issue validate 70 --format json
 ```
 
-Read-only commands never create branches or change GitHub. `conveyor build`
-lists its branch, label, session, and agent actions before asking for operator
-confirmation (or requiring explicit `--yes` for automation). Pushes and pull
-requests are not implemented yet.
+`conveyor build 70` lists its branch, label, session, and agent actions before
+asking for operator confirmation (or accepting explicit `--yes` for
+automation). It creates the configured conventional branch, moves the issue
+from `ready-for-build` to `in-progress`, writes a local session and task
+packet, then runs the configured implementer.
+
+```sh
+conveyor build 70
+conveyor status 70
+conveyor verify
+conveyor review 70
+conveyor pr open 70
+conveyor audit 70
+```
+
+`verify` writes structured evidence to `.conveyor/reports/latest.json`.
+`review` creates a review packet and optionally runs the configured reviewer.
+`pr open` requires passing required checks (or `--waive-by <operator>`), shows
+the push and draft-PR plan, and requests consent unless `--yes` is supplied.
+It never creates a non-draft PR. `audit` prints the JSONL record of completed
+branch, issue, agent, push, and PR actions for the issue.
+
+The default branch convention is `feat/{issue}-build`. Configure a repository
+specific pattern in `.conveyor.toml`; it must include `{issue}` and contain no
+whitespace:
+
+```toml
+[conveyor]
+branch_pattern = "work/{issue}/implementation"
+```
 
 ## Direct local agent adapter
 
