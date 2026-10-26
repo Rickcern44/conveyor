@@ -144,6 +144,28 @@ exit 1
     let previous_path = std::env::var("PATH").unwrap();
     let path = format!("{}:{previous_path}", binaries.display());
     let gh_log = root.join("gh.log");
+    let dry_run = Command::new(env!("CARGO_BIN_EXE_conveyor"))
+        .args(["build", "70", "--dry-run"])
+        .current_dir(&repository)
+        .env("PATH", &path)
+        .env("CONVEYOR_GH_LOG", &gh_log)
+        .output()
+        .unwrap();
+    assert!(dry_run.status.success());
+    assert!(String::from_utf8_lossy(&dry_run.stdout).contains("build dry run"));
+    assert!(!repository.join(".conveyor/sessions/70.json").exists());
+    assert_eq!(
+        String::from_utf8_lossy(
+            &Command::new("git")
+                .args(["branch", "--show-current"])
+                .current_dir(&repository)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .trim(),
+        "main"
+    );
     let output = Command::new(env!("CARGO_BIN_EXE_conveyor"))
         .args(["build", "70", "--yes"])
         .current_dir(&repository)

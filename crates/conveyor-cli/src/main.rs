@@ -312,16 +312,18 @@ fn git_output<const N: usize>(
     }
 }
 
-fn parse_build_arguments(arguments: &[String]) -> Result<(&str, bool, Option<&str>), String> {
+fn parse_build_arguments(arguments: &[String]) -> Result<(&str, bool, bool, Option<&str>), String> {
     let Some(number) = arguments.first() else {
-        return Err("Usage: conveyor build <number> [--agent <name>] [--yes]".to_owned());
+        return Err("Usage: conveyor build <number> [--agent <name>] [--dry-run|--yes]".to_owned());
     };
     let mut explicit_yes = false;
+    let mut dry_run = false;
     let mut requested_agent = None;
     let mut index = 1;
     while index < arguments.len() {
         match arguments[index].as_str() {
             "--yes" if !explicit_yes => explicit_yes = true,
+            "--dry-run" if !dry_run => dry_run = true,
             "--agent" if requested_agent.is_none() => {
                 let Some(agent) = arguments.get(index + 1) else {
                     return Err("--agent requires a configured agent name".to_owned());
@@ -330,12 +332,17 @@ fn parse_build_arguments(arguments: &[String]) -> Result<(&str, bool, Option<&st
                 index += 1;
             }
             _ => {
-                return Err("Usage: conveyor build <number> [--agent <name>] [--yes]".to_owned());
+                return Err(
+                    "Usage: conveyor build <number> [--agent <name>] [--dry-run|--yes]".to_owned(),
+                );
             }
         }
         index += 1;
     }
-    Ok((number, explicit_yes, requested_agent))
+    if dry_run && explicit_yes {
+        return Err("--dry-run cannot be combined with --yes".to_owned());
+    }
+    Ok((number, explicit_yes, dry_run, requested_agent))
 }
 
 fn parse_review_arguments(arguments: &[String]) -> Result<(&str, Option<&str>), String> {
@@ -347,7 +354,7 @@ fn parse_review_arguments(arguments: &[String]) -> Result<(&str, Option<&str>), 
 }
 
 fn build(arguments: &[String], directory: &Path) -> Result<String, String> {
-    let (number, explicit_yes, requested_agent) = parse_build_arguments(arguments)?;
+    let (number, explicit_yes, dry_run, requested_agent) = parse_build_arguments(arguments)?;
     let issue_number = parse_issue_number(number)?;
     let configuration = load_config(directory)?;
     let labels = issue_labels(number, &configuration, directory)?;
@@ -392,6 +399,15 @@ fn build(arguments: &[String], directory: &Path) -> Result<String, String> {
             )
         })?
         .clone();
+    if dry_run {
+        return Ok(format!(
+            "build dry run for issue #{issue_number}\nbranch: {}\nGitHub label transition: {} -> {}\nagent command: {}\nno Git, GitHub, session, packet, or agent action was performed",
+            plan.branch,
+            configuration.workflow.ready_label,
+            configuration.workflow.in_progress_label,
+            command.program
+        ));
+    }
     let summary = format!(
         "Issue #{issue_number}\nBranch to create: {}\nGitHub label transition: {} -> {}\nLocal session: .conveyor/sessions/{issue_number}.json\nAgent command: {}",
         plan.branch,
@@ -1182,7 +1198,7 @@ fn initialize(arguments: &[String], directory: &Path) -> Result<String, String> 
 }
 
 fn usage() -> &'static str {
-    "Usage:\n  conveyor init --repository <owner/repository> [--target-branch <branch>]\n  conveyor doctor\n  conveyor status [issue]\n  conveyor block <number> --reason <text> --owner <name>\n  conveyor resume <number> --to <state>\n  conveyor issue validate <number> [--format human|json]\n  conveyor handoff <number> --role <planner|implementer|reviewer>\n  conveyor build <number> [--agent <name>] [--yes]\n  conveyor verify [--format human|json]\n  conveyor review <number> [--agent <name>]\n  conveyor pr open <number> [--waive-by <name>] [--yes]\n  conveyor audit <number>"
+    "Usage:\n  conveyor init --repository <owner/repository> [--target-branch <branch>]\n  conveyor doctor\n  conveyor status [issue]\n  conveyor block <number> --reason <text> --owner <name>\n  conveyor resume <number> --to <state>\n  conveyor issue validate <number> [--format human|json]\n  conveyor handoff <number> --role <planner|implementer|reviewer>\n  conveyor build <number> [--agent <name>] [--dry-run|--yes]\n  conveyor verify [--format human|json]\n  conveyor review <number> [--agent <name>]\n  conveyor pr open <number> [--waive-by <name>] [--yes]\n  conveyor audit <number>"
 }
 
 #[cfg(test)]
@@ -1236,8 +1252,16 @@ mod tests {
         ];
         let parsed = parse_build_arguments(&arguments).unwrap();
 
-        assert_eq!(parsed, ("70", true, Some("local")));
+        assert_eq!(parsed, ("70", true, false, Some("local")));
         assert!(parse_build_arguments(&["70".to_owned(), "--agent".to_owned()]).is_err());
+        assert_eq!(
+            parse_build_arguments(&["70".to_owned(), "--dry-run".to_owned()]).unwrap(),
+            ("70", false, true, None)
+        );
+        assert!(
+            parse_build_arguments(&["70".to_owned(), "--dry-run".to_owned(), "--yes".to_owned(),])
+                .is_err()
+        );
     }
 
     #[test]

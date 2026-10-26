@@ -44,8 +44,13 @@ automation). It creates the configured conventional branch, moves the issue
 from `ready-for-build` to `in-progress`, writes a local session and task
 packet, then runs the configured implementer.
 
+Add `--dry-run` to perform every preflight check and display the proposed
+branch, label transition, and adapter without changing Git, GitHub, local
+session files, packets, or agent state.
+
 ```sh
 conveyor build 70
+conveyor build 70 --dry-run
 conveyor status 70
 conveyor block 70 --reason "Waiting for API access" --owner platform-team
 conveyor resume 70 --to in-progress
