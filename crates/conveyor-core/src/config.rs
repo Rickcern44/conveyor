@@ -18,6 +18,7 @@ pub struct ConveyorConfig {
     pub version: u32,
     pub target_branch: String,
     pub branch_pattern: String,
+    pub commit_message_pattern: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -97,6 +98,7 @@ impl Config {
                 version: 1,
                 target_branch: target_branch.into(),
                 branch_pattern: "feat/{issue}-build".to_owned(),
+                commit_message_pattern: "feat: issue #{issue}".to_owned(),
             },
             github: GithubConfig {
                 repository: repository.into(),
@@ -145,12 +147,28 @@ impl Config {
             .replace("{issue}", &issue_number.to_string()))
     }
 
+    /// Expands the repository's conventional commit message for one issue.
+    pub fn commit_message_for_issue(&self, issue_number: u64) -> Result<String, ConfigError> {
+        validate_issue_pattern(
+            "conveyor.commit_message_pattern",
+            &self.conveyor.commit_message_pattern,
+        )?;
+        Ok(self
+            .conveyor
+            .commit_message_pattern
+            .replace("{issue}", &issue_number.to_string()))
+    }
+
     /// Serializes the supported configuration surface as stable TOML.
     pub fn to_toml(&self) -> Result<String, ConfigError> {
         if self.conveyor.version != 1 {
             return Err(ConfigError::UnsupportedVersion(self.conveyor.version));
         }
         validate_branch_pattern(&self.conveyor.branch_pattern)?;
+        validate_issue_pattern(
+            "conveyor.commit_message_pattern",
+            &self.conveyor.commit_message_pattern,
+        )?;
         let quoted_actions = self
             .workflow
             .require_confirmation_for
@@ -189,10 +207,11 @@ impl Config {
             })
             .collect::<String>();
         Ok(format!(
-            "[conveyor]\nversion = {}\ntarget_branch = {}\nbranch_pattern = {}\n\n[github]\nrepository = {}\n\n[workflow]\nready_label = {}\nin_progress_label = {}\nblocked_label = {}\ndraft_prs_only = {}\nrequire_confirmation_for = [{}]\n\n[agents]\nplanner = {}\nimplementer = {}\nreviewer = {}\n{}{}",
+            "[conveyor]\nversion = {}\ntarget_branch = {}\nbranch_pattern = {}\ncommit_message_pattern = {}\n\n[github]\nrepository = {}\n\n[workflow]\nready_label = {}\nin_progress_label = {}\nblocked_label = {}\ndraft_prs_only = {}\nrequire_confirmation_for = [{}]\n\n[agents]\nplanner = {}\nimplementer = {}\nreviewer = {}\n{}{}",
             self.conveyor.version,
             quote(&self.conveyor.target_branch),
             quote(&self.conveyor.branch_pattern),
+            quote(&self.conveyor.commit_message_pattern),
             quote(&self.github.repository),
             quote(&self.workflow.ready_label),
             quote(&self.workflow.in_progress_label),
@@ -271,11 +290,18 @@ impl Config {
             .transpose()?
             .unwrap_or_else(|| "feat/{issue}-build".to_owned());
         validate_branch_pattern(&branch_pattern)?;
+        let commit_message_pattern = values
+            .get("conveyor.commit_message_pattern")
+            .map(|value| parse_string(value))
+            .transpose()?
+            .unwrap_or_else(|| "feat: issue #{issue}".to_owned());
+        validate_issue_pattern("conveyor.commit_message_pattern", &commit_message_pattern)?;
         Ok(Self {
             conveyor: ConveyorConfig {
                 version,
                 target_branch: parse_string(required(&values, "conveyor.target_branch")?)?,
                 branch_pattern,
+                commit_message_pattern,
             },
             github: GithubConfig {
                 repository: parse_string(required(&values, "github.repository")?)?,
@@ -309,14 +335,22 @@ impl Config {
 }
 
 fn validate_branch_pattern(pattern: &str) -> Result<(), ConfigError> {
-    if pattern.contains("{issue}")
-        && !pattern.is_empty()
-        && !pattern.chars().any(char::is_whitespace)
-    {
+    if pattern.chars().any(char::is_whitespace) {
+        Err(ConfigError::InvalidValue {
+            key: "conveyor.branch_pattern",
+            value: pattern.to_owned(),
+        })
+    } else {
+        validate_issue_pattern("conveyor.branch_pattern", pattern)
+    }
+}
+
+fn validate_issue_pattern(key: &'static str, pattern: &str) -> Result<(), ConfigError> {
+    if pattern.contains("{issue}") && !pattern.is_empty() {
         Ok(())
     } else {
         Err(ConfigError::InvalidValue {
-            key: "conveyor.branch_pattern",
+            key,
             value: pattern.to_owned(),
         })
     }

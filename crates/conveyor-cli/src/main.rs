@@ -409,6 +409,9 @@ fn build(arguments: &[String], directory: &Path) -> Result<String, String> {
         issue_number,
         AgentRole::Implementer,
         &plan.branch,
+        configuration
+            .commit_message_for_issue(issue_number)
+            .map_err(|error| error.to_string())?,
         contract,
         guidance,
         configuration.checks,
@@ -635,6 +638,9 @@ fn handoff(arguments: &[String], directory: &Path) -> Result<String, String> {
         role,
         configuration
             .branch_for_issue(issue_number)
+            .map_err(|error| error.to_string())?,
+        configuration
+            .commit_message_for_issue(issue_number)
             .map_err(|error| error.to_string())?,
         contract,
         guidance,
@@ -1198,6 +1204,7 @@ mod tests {
             70,
             AgentRole::Implementer,
             "feat/70-handoff",
+            "feat: issue #70",
             conveyor_core::issue_contract::IssueContract {
                 problem: "Make handoffs portable.".to_owned(),
                 in_scope: "Task packet creation.".to_owned(),

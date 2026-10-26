@@ -22,6 +22,7 @@ fn renders_a_portable_implementer_brief() {
         70,
         AgentRole::Implementer,
         "feat/70-task-packet",
+        "feat: issue #70",
         contract(),
         "Follow AGENTS.md and use TDD.",
         vec![Check {
@@ -36,6 +37,7 @@ fn renders_a_portable_implementer_brief() {
     assert!(markdown.contains("# Conveyor task packet: issue #70"));
     assert!(markdown.contains("Role: implementer"));
     assert!(markdown.contains("Branch: `feat/70-task-packet`"));
+    assert!(markdown.contains("Commit convention: `feat: issue #70`"));
     assert!(markdown.contains("Users need reliable issue handoffs."));
     assert!(markdown.contains("`cargo test --workspace`"));
     assert!(markdown.contains("Follow AGENTS.md and use TDD."));

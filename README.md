@@ -71,6 +71,7 @@ whitespace:
 ```toml
 [conveyor]
 branch_pattern = "work/{issue}/implementation"
+commit_message_pattern = "feat: issue #{issue}"
 ```
 
 ## Direct local agent adapter

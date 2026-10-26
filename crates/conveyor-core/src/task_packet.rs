@@ -36,6 +36,7 @@ pub struct TaskPacket {
     pub issue_number: u64,
     pub role: AgentRole,
     pub branch: String,
+    pub commit_message: String,
     pub contract: IssueContract,
     pub repository_guidance: String,
     pub checks: Vec<Check>,
@@ -47,6 +48,7 @@ impl TaskPacket {
         issue_number: u64,
         role: AgentRole,
         branch: impl Into<String>,
+        commit_message: impl Into<String>,
         contract: IssueContract,
         repository_guidance: impl Into<String>,
         checks: Vec<Check>,
@@ -55,6 +57,7 @@ impl TaskPacket {
             issue_number,
             role,
             branch: branch.into(),
+            commit_message: commit_message.into(),
             contract,
             repository_guidance: repository_guidance.into(),
             checks,
@@ -80,10 +83,11 @@ impl TaskPacket {
                 .join("\n")
         };
         format!(
-            "# Conveyor task packet: issue #{}\n\nRole: {}\n\nBranch: `{}`\n\n## Repository guidance\n\n{}\n\n## Problem\n\n{}\n\n## In scope\n\n{}\n\n## Out of scope\n\n{}\n\n## Acceptance criteria\n\n{}\n\n## Affected components\n\n{}\n\n## Verification plan\n\n{}\n\n## Dependencies and risks\n\n{}\n\n## Open questions\n\n{}\n\n## Required checks\n\n{}\n",
+            "# Conveyor task packet: issue #{}\n\nRole: {}\n\nBranch: `{}`\n\nCommit convention: `{}`\n\n## Repository guidance\n\n{}\n\n## Problem\n\n{}\n\n## In scope\n\n{}\n\n## Out of scope\n\n{}\n\n## Acceptance criteria\n\n{}\n\n## Affected components\n\n{}\n\n## Verification plan\n\n{}\n\n## Dependencies and risks\n\n{}\n\n## Open questions\n\n{}\n\n## Required checks\n\n{}\n",
             self.issue_number,
             self.role.as_str(),
             self.branch,
+            self.commit_message,
             self.repository_guidance,
             self.contract.problem,
             self.contract.in_scope,

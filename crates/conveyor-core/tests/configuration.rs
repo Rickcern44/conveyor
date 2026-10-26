@@ -8,6 +8,10 @@ fn default_configuration_has_safe_delivery_policy() {
     assert_eq!(config.workflow.in_progress_label, "in-progress");
     assert_eq!(config.conveyor.branch_pattern, "feat/{issue}-build");
     assert_eq!(
+        config.conveyor.commit_message_pattern,
+        "feat: issue #{issue}"
+    );
+    assert_eq!(
         config.workflow.require_confirmation_for,
         vec![
             ConfirmationAction::Push,
@@ -26,6 +30,17 @@ fn expands_the_configured_branch_pattern_for_an_issue() {
     assert_eq!(
         config.branch_for_issue(70).unwrap(),
         "work/70/implementation"
+    );
+}
+
+#[test]
+fn expands_the_configured_commit_message_pattern_for_an_issue() {
+    let mut config = Config::new("octo-org/conveyor", "main");
+    config.conveyor.commit_message_pattern = "feat(auth): issue #{issue}".to_owned();
+
+    assert_eq!(
+        config.commit_message_for_issue(70).unwrap(),
+        "feat(auth): issue #70"
     );
 }
 
