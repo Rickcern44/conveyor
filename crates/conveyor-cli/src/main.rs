@@ -1074,8 +1074,19 @@ fn validate_issue(number: &str, options: &[String], directory: &Path) -> Result<
 }
 
 fn fetch_issue_body(number: &str, directory: &Path) -> Result<String, String> {
+    let configuration = load_config(directory)?;
     let output = Command::new("gh")
-        .args(["issue", "view", number, "--json", "body", "--jq", ".body"])
+        .args([
+            "issue",
+            "view",
+            number,
+            "--repo",
+            &configuration.github.repository,
+            "--json",
+            "body",
+            "--jq",
+            ".body",
+        ])
         .current_dir(directory)
         .output()
         .map_err(|error| format!("could not run gh: {error}"))?;

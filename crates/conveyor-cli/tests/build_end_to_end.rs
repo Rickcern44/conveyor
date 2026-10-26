@@ -60,6 +60,9 @@ fn build_creates_a_branch_session_packet_and_local_agent_invocation() {
         &gh,
         r#"#!/bin/sh
 if [ "$1" = "issue" ] && [ "$2" = "view" ]; then
+  if [ -n "$CONVEYOR_GH_LOG" ]; then
+    printf '%s\n' "$*" >> "$CONVEYOR_GH_LOG"
+  fi
   case "$*" in
     *labels*) printf 'ready-for-build\n' ;;
     *) cat <<'ISSUE'
@@ -204,6 +207,11 @@ exit 1
         fs::read_to_string(&gh_log)
             .unwrap()
             .contains("--add-label in-progress")
+    );
+    assert!(
+        fs::read_to_string(&gh_log)
+            .unwrap()
+            .contains("issue view 70 --repo owner/repository --json body")
     );
 
     let verify = Command::new(env!("CARGO_BIN_EXE_conveyor"))
