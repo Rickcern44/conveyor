@@ -78,6 +78,7 @@ whitespace:
 
 ```toml
 [conveyor]
+remote = "origin"
 branch_pattern = "work/{issue}/implementation"
 commit_message_pattern = "feat: issue #{issue}"
 ```

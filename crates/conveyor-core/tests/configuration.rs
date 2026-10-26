@@ -7,6 +7,7 @@ fn default_configuration_has_safe_delivery_policy() {
     assert!(config.workflow.draft_prs_only);
     assert_eq!(config.workflow.in_progress_label, "in-progress");
     assert_eq!(config.conveyor.branch_pattern, "feat/{issue}-build");
+    assert_eq!(config.conveyor.remote, "origin");
     assert_eq!(
         config.conveyor.commit_message_pattern,
         "feat: issue #{issue}"
@@ -19,6 +20,17 @@ fn default_configuration_has_safe_delivery_policy() {
             ConfirmationAction::Merge,
             ConfirmationAction::Deploy,
         ]
+    );
+}
+
+#[test]
+fn configuration_round_trips_a_custom_delivery_remote() {
+    let mut config = Config::new("octo-org/conveyor", "main");
+    config.conveyor.remote = "fork".to_owned();
+
+    assert_eq!(
+        Config::from_toml(&config.to_toml().unwrap()).unwrap(),
+        config
     );
 }
 

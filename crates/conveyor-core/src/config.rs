@@ -16,6 +16,7 @@ pub struct Config {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConveyorConfig {
     pub version: u32,
+    pub remote: String,
     pub target_branch: String,
     pub branch_pattern: String,
     pub commit_message_pattern: String,
@@ -96,6 +97,7 @@ impl Config {
         Self {
             conveyor: ConveyorConfig {
                 version: 1,
+                remote: "origin".to_owned(),
                 target_branch: target_branch.into(),
                 branch_pattern: "feat/{issue}-build".to_owned(),
                 commit_message_pattern: "feat: issue #{issue}".to_owned(),
@@ -207,8 +209,9 @@ impl Config {
             })
             .collect::<String>();
         Ok(format!(
-            "[conveyor]\nversion = {}\ntarget_branch = {}\nbranch_pattern = {}\ncommit_message_pattern = {}\n\n[github]\nrepository = {}\n\n[workflow]\nready_label = {}\nin_progress_label = {}\nblocked_label = {}\ndraft_prs_only = {}\nrequire_confirmation_for = [{}]\n\n[agents]\nplanner = {}\nimplementer = {}\nreviewer = {}\n{}{}",
+            "[conveyor]\nversion = {}\nremote = {}\ntarget_branch = {}\nbranch_pattern = {}\ncommit_message_pattern = {}\n\n[github]\nrepository = {}\n\n[workflow]\nready_label = {}\nin_progress_label = {}\nblocked_label = {}\ndraft_prs_only = {}\nrequire_confirmation_for = [{}]\n\n[agents]\nplanner = {}\nimplementer = {}\nreviewer = {}\n{}{}",
             self.conveyor.version,
+            quote(&self.conveyor.remote),
             quote(&self.conveyor.target_branch),
             quote(&self.conveyor.branch_pattern),
             quote(&self.conveyor.commit_message_pattern),
@@ -299,6 +302,11 @@ impl Config {
         Ok(Self {
             conveyor: ConveyorConfig {
                 version,
+                remote: values
+                    .get("conveyor.remote")
+                    .map(|value| parse_string(value))
+                    .transpose()?
+                    .unwrap_or_else(|| "origin".to_owned()),
                 target_branch: parse_string(required(&values, "conveyor.target_branch")?)?,
                 branch_pattern,
                 commit_message_pattern,

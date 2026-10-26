@@ -144,7 +144,7 @@ fn pr(arguments: &[String], directory: &Path) -> Result<String, String> {
     mark_session_in_review(directory, issue_number)?;
     run_command(
         "git",
-        ["push", "-u", "origin", &branch],
+        ["push", "-u", &configuration.conveyor.remote, &branch],
         directory,
         "could not push branch",
     )?;
@@ -152,7 +152,7 @@ fn pr(arguments: &[String], directory: &Path) -> Result<String, String> {
         directory,
         issue_number,
         "push_branch",
-        format!("origin/{branch}"),
+        format!("{}/{branch}", configuration.conveyor.remote),
     )?;
     let title = format!("Conveyor: issue #{issue_number}");
     let output = Command::new("gh")
