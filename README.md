@@ -22,8 +22,8 @@ Initialize a consumer repository with versioned, safe defaults:
 conveyor init --repository owner/repository --target-branch main
 ```
 
-Inspect the local repository, GitHub authentication, and configured agent
-executables without changing any state:
+Inspect the local repository, configured delivery remote, GitHub authentication,
+and configured agent executables without changing any state:
 
 ```sh
 conveyor doctor

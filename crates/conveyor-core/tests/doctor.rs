@@ -8,6 +8,10 @@ impl Probe for UnhealthyMachine {
         ProbeResult::Missing("not inside a Git worktree".to_owned())
     }
 
+    fn git_remote(&self, name: &str) -> ProbeResult {
+        ProbeResult::Missing(format!("Git remote `{name}` is not configured"))
+    }
+
     fn github_authentication(&self) -> ProbeResult {
         ProbeResult::Missing("gh auth status did not find an active account".to_owned())
     }
@@ -22,7 +26,7 @@ fn reports_every_missing_prerequisite_without_stopping_early() {
     let report = Doctor::new(&UnhealthyMachine).check(&Config::new("octo-org/conveyor", "main"));
 
     assert!(!report.is_healthy());
-    assert_eq!(report.findings.len(), 5);
+    assert_eq!(report.findings.len(), 6);
     assert!(
         report
             .findings
@@ -34,6 +38,12 @@ fn reports_every_missing_prerequisite_without_stopping_early() {
             .findings
             .iter()
             .any(|finding| finding.kind == FindingKind::GithubAuthentication)
+    );
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|finding| finding.kind == FindingKind::GitRemote)
     );
     assert!(
         report

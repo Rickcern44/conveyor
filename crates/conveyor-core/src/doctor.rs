@@ -12,6 +12,7 @@ pub enum ProbeResult {
 /// Queries machine-specific prerequisites without allowing any mutations.
 pub trait Probe {
     fn git_repository(&self) -> ProbeResult;
+    fn git_remote(&self, name: &str) -> ProbeResult;
     fn github_authentication(&self) -> ProbeResult;
     fn executable(&self, name: &str) -> ProbeResult;
 }
@@ -33,6 +34,11 @@ impl<'a, P: Probe> Doctor<'a, P> {
             &mut findings,
             FindingKind::GitRepository,
             self.probe.git_repository(),
+        );
+        collect(
+            &mut findings,
+            FindingKind::GitRemote,
+            self.probe.git_remote(&configuration.conveyor.remote),
         );
         collect(
             &mut findings,
@@ -95,6 +101,7 @@ pub struct Finding {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FindingKind {
     GitRepository,
+    GitRemote,
     GithubAuthentication,
     AgentExecutable,
 }

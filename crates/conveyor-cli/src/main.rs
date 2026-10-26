@@ -1202,6 +1202,7 @@ fn doctor(directory: &Path) -> Result<String, String> {
 fn finding_name(kind: FindingKind) -> &'static str {
     match kind {
         FindingKind::GitRepository => "git repository",
+        FindingKind::GitRemote => "git remote",
         FindingKind::GithubAuthentication => "github authentication",
         FindingKind::AgentExecutable => "agent executable",
     }
@@ -1220,6 +1221,13 @@ impl Probe for SystemProbe<'_> {
         )
         .map_or_else(
             || ProbeResult::Missing("not inside a Git worktree".to_owned()),
+            |_| ProbeResult::Available,
+        )
+    }
+
+    fn git_remote(&self, name: &str) -> ProbeResult {
+        command_succeeds("git", ["remote", "get-url", name], Some(self.directory)).map_or_else(
+            || ProbeResult::Missing(format!("configured remote `{name}` does not exist")),
             |_| ProbeResult::Available,
         )
     }
