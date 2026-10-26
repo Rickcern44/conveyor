@@ -215,6 +215,11 @@ exit 1
             .unwrap()
             .contains("\"waiver_by\":\"rick\"")
     );
+    assert!(
+        fs::read_to_string(repository.join(".conveyor/sessions/70.json"))
+            .unwrap()
+            .contains("\"state\": \"in-review\"")
+    );
     assert!(fs::read_to_string(&gh_log).unwrap().contains("pr create"));
     let audit = fs::read_to_string(repository.join(".conveyor/audit/70.jsonl")).unwrap();
     for action in [
@@ -223,6 +228,7 @@ exit 1
         "run_implementer",
         "run_reviewer",
         "waive_verification",
+        "transition_session",
         "push_branch",
         "open_draft_pr",
     ] {

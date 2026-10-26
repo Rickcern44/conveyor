@@ -141,6 +141,7 @@ fn pr(arguments: &[String], directory: &Path) -> Result<String, String> {
         write_evidence(directory, &evidence)?;
         record_audit(directory, issue_number, "waive_verification", operator)?;
     }
+    mark_session_in_review(directory, issue_number)?;
     run_command(
         "git",
         ["push", "-u", "origin", &branch],
@@ -211,6 +212,7 @@ fn review(arguments: &[String], directory: &Path) -> Result<String, String> {
     let evidence = EvidenceReport::from_json(&source)
         .map_err(|error| format!("could not parse latest verification evidence: {error}"))?;
     ensure_evidence_is_current(directory, &evidence)?;
+    let checks_passed = evidence.verification.passes_required_checks();
     let diff_summary = git_output(
         [
             "diff",
@@ -227,6 +229,9 @@ fn review(arguments: &[String], directory: &Path) -> Result<String, String> {
         evidence,
     };
     let path = write_review_packet(directory, &packet)?;
+    if checks_passed {
+        mark_session_in_review(directory, issue_number)?;
+    }
     let agent_name = requested_agent.unwrap_or(&configuration.agents.reviewer);
     let Some(command) = configuration.agent_command(agent_name) else {
         return Ok(format!("created review packet: {}", path.display()));
@@ -899,6 +904,26 @@ fn load_session(store: &SessionStore, issue_number: u64) -> Result<SessionRecord
         .load(issue_number)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("status: no local session for issue #{issue_number}"))
+}
+
+fn mark_session_in_review(directory: &Path, issue_number: u64) -> Result<(), String> {
+    let store = SessionStore::new(directory);
+    let mut session = load_session(&store, issue_number)?;
+    match session.state {
+        IssueState::InReview => Ok(()),
+        IssueState::InProgress => {
+            session.state = session
+                .state
+                .transition_to(IssueState::InReview)
+                .map_err(|error| error.to_string())?;
+            store.save(&session).map_err(|error| error.to_string())?;
+            record_audit(directory, issue_number, "transition_session", "in-review")
+        }
+        state => Err(format!(
+            "could not prepare issue #{issue_number} for review from state {}",
+            state.as_str()
+        )),
+    }
 }
 
 fn render_session(session: &SessionRecord, directory: &Path) -> String {
