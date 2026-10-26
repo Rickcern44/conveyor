@@ -314,18 +314,25 @@ fn git_output<const N: usize>(
     }
 }
 
-fn parse_build_arguments(arguments: &[String]) -> Result<(&str, bool, bool, Option<&str>), String> {
+fn parse_build_arguments(
+    arguments: &[String],
+) -> Result<(&str, bool, bool, bool, Option<&str>), String> {
     let Some(number) = arguments.first() else {
-        return Err("Usage: conveyor build <number> [--agent <name>] [--dry-run|--yes]".to_owned());
+        return Err(
+            "Usage: conveyor build <number> [--agent <name>] [--open-draft-pr] [--dry-run|--yes]"
+                .to_owned(),
+        );
     };
     let mut explicit_yes = false;
     let mut dry_run = false;
+    let mut open_draft_pr = false;
     let mut requested_agent = None;
     let mut index = 1;
     while index < arguments.len() {
         match arguments[index].as_str() {
             "--yes" if !explicit_yes => explicit_yes = true,
             "--dry-run" if !dry_run => dry_run = true,
+            "--open-draft-pr" if !open_draft_pr => open_draft_pr = true,
             "--agent" if requested_agent.is_none() => {
                 let Some(agent) = arguments.get(index + 1) else {
                     return Err("--agent requires a configured agent name".to_owned());
@@ -335,7 +342,7 @@ fn parse_build_arguments(arguments: &[String]) -> Result<(&str, bool, bool, Opti
             }
             _ => {
                 return Err(
-                    "Usage: conveyor build <number> [--agent <name>] [--dry-run|--yes]".to_owned(),
+                    "Usage: conveyor build <number> [--agent <name>] [--open-draft-pr] [--dry-run|--yes]".to_owned(),
                 );
             }
         }
@@ -344,7 +351,13 @@ fn parse_build_arguments(arguments: &[String]) -> Result<(&str, bool, bool, Opti
     if dry_run && explicit_yes {
         return Err("--dry-run cannot be combined with --yes".to_owned());
     }
-    Ok((number, explicit_yes, dry_run, requested_agent))
+    Ok((
+        number,
+        explicit_yes,
+        dry_run,
+        open_draft_pr,
+        requested_agent,
+    ))
 }
 
 fn parse_review_arguments(arguments: &[String]) -> Result<(&str, Option<&str>), String> {
@@ -356,7 +369,8 @@ fn parse_review_arguments(arguments: &[String]) -> Result<(&str, Option<&str>), 
 }
 
 fn build(arguments: &[String], directory: &Path) -> Result<String, String> {
-    let (number, explicit_yes, dry_run, requested_agent) = parse_build_arguments(arguments)?;
+    let (number, explicit_yes, dry_run, open_draft_pr, requested_agent) =
+        parse_build_arguments(arguments)?;
     let issue_number = parse_issue_number(number)?;
     let configuration = load_config(directory)?;
     let labels = issue_labels(number, &configuration, directory)?;
@@ -410,8 +424,13 @@ fn build(arguments: &[String], directory: &Path) -> Result<String, String> {
             command.program
         ));
     }
+    let delivery_plan = if open_draft_pr {
+        "\nAfter a clean agent result: run verification, review, push the branch, and create a draft PR"
+    } else {
+        ""
+    };
     let summary = format!(
-        "Issue #{issue_number}\nBranch to create: {}\nGitHub label transition: {} -> {}\nLocal session: .conveyor/sessions/{issue_number}.json\nAgent command: {}",
+        "Issue #{issue_number}\nBranch to create: {}\nGitHub label transition: {} -> {}\nLocal session: .conveyor/sessions/{issue_number}.json\nAgent command: {}{delivery_plan}",
         plan.branch,
         configuration.workflow.ready_label,
         configuration.workflow.in_progress_label,
@@ -478,7 +497,7 @@ fn build(arguments: &[String], directory: &Path) -> Result<String, String> {
             .map_err(|error| error.to_string())?,
         contract,
         guidance,
-        configuration.checks,
+        configuration.checks.clone(),
     );
     let packet_path = write_packet(directory, &packet)?;
     let invocation = CommandTemplate {
@@ -523,6 +542,36 @@ fn build(arguments: &[String], directory: &Path) -> Result<String, String> {
         return Err(format!(
             "implementer exited unsuccessfully: {}",
             String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    if open_draft_pr {
+        if !worktree_is_clean(directory)? {
+            return Err(
+                "implementer completed, but --open-draft-pr requires a clean worktree; commit or stash the changes, then run `conveyor verify`, `conveyor review`, and `conveyor pr open`"
+                    .to_owned(),
+            );
+        }
+        let evidence = EvidenceReport::new(
+            current_revision(directory),
+            verify(&LocalCommandRunner { directory }, &configuration.checks),
+        );
+        write_evidence(directory, &configuration, &evidence)?;
+        if !evidence.verification.passes_required_checks() {
+            return Err(
+                "implementer completed, but required checks failed; run `conveyor verify` and use `conveyor pr open --waive-by <name>` only with an explicit waiver"
+                    .to_owned(),
+            );
+        }
+        let review_result = review(&[number.to_owned()], directory)?;
+        let pr_arguments = if explicit_yes {
+            vec!["open".to_owned(), number.to_owned(), "--yes".to_owned()]
+        } else {
+            vec!["open".to_owned(), number.to_owned()]
+        };
+        let pr_result = pr(&pr_arguments, directory)?;
+        return Ok(format!(
+            "build session started for issue #{issue_number} on {}; implementer completed\n{review_result}\n{pr_result}",
+            plan.branch
         ));
     }
     Ok(format!(
@@ -602,7 +651,11 @@ fn worktree_is_clean(directory: &Path) -> Result<bool, String> {
     if !output.status.success() {
         return Err("could not inspect worktree status".to_owned());
     }
-    Ok(output.stdout.is_empty())
+    let has_non_conveyor_change = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.get(3..))
+        .any(|path| !path.starts_with(".conveyor/"));
+    Ok(!has_non_conveyor_change)
 }
 
 fn worktree_is_up_to_date(directory: &Path) -> Result<bool, String> {
@@ -1250,7 +1303,7 @@ fn initialize(arguments: &[String], directory: &Path) -> Result<String, String> 
 }
 
 fn usage() -> &'static str {
-    "Usage:\n  conveyor init --repository <owner/repository> [--target-branch <branch>]\n  conveyor doctor\n  conveyor status [issue]\n  conveyor block <number> --reason <text> --owner <name>\n  conveyor resume <number> --to <state>\n  conveyor issue validate <number> [--format human|json]\n  conveyor handoff <number> --role <planner|implementer|reviewer>\n  conveyor build <number> [--agent <name>] [--dry-run|--yes]\n  conveyor verify [--format human|json]\n  conveyor review <number> [--agent <name>]\n  conveyor pr open <number> [--waive-by <name>] [--yes]\n  conveyor audit <number>"
+    "Usage:\n  conveyor init --repository <owner/repository> [--target-branch <branch>]\n  conveyor doctor\n  conveyor status [issue]\n  conveyor block <number> --reason <text> --owner <name>\n  conveyor resume <number> --to <state>\n  conveyor issue validate <number> [--format human|json]\n  conveyor handoff <number> --role <planner|implementer|reviewer>\n  conveyor build <number> [--agent <name>] [--open-draft-pr] [--dry-run|--yes]\n  conveyor verify [--format human|json]\n  conveyor review <number> [--agent <name>]\n  conveyor pr open <number> [--waive-by <name>] [--yes]\n  conveyor audit <number>"
 }
 
 #[cfg(test)]
@@ -1304,11 +1357,15 @@ mod tests {
         ];
         let parsed = parse_build_arguments(&arguments).unwrap();
 
-        assert_eq!(parsed, ("70", true, false, Some("local")));
+        assert_eq!(parsed, ("70", true, false, false, Some("local")));
         assert!(parse_build_arguments(&["70".to_owned(), "--agent".to_owned()]).is_err());
         assert_eq!(
             parse_build_arguments(&["70".to_owned(), "--dry-run".to_owned()]).unwrap(),
-            ("70", false, true, None)
+            ("70", false, true, false, None)
+        );
+        assert_eq!(
+            parse_build_arguments(&["70".to_owned(), "--open-draft-pr".to_owned()]).unwrap(),
+            ("70", false, false, true, None)
         );
         assert!(
             parse_build_arguments(&["70".to_owned(), "--dry-run".to_owned(), "--yes".to_owned(),])

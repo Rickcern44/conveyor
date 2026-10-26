@@ -48,9 +48,15 @@ Add `--dry-run` to perform every preflight check and display the proposed
 branch, label transition, and adapter without changing Git, GitHub, local
 session files, packets, or agent state.
 
+`--open-draft-pr` is an explicit delivery request. After the implementer
+finishes, Conveyor requires a clean worktree, runs configured verification,
+prepares review, then pushes and opens a draft PR. A failed check stops before
+delivery and requires the normal named-waiver path.
+
 ```sh
 conveyor build 70
 conveyor build 70 --dry-run
+conveyor build 70 --open-draft-pr --yes
 conveyor status 70
 conveyor block 70 --reason "Waiting for API access" --owner platform-team
 conveyor resume 70 --to in-progress

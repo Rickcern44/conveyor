@@ -116,8 +116,8 @@ exit 1
         args: vec!["-c".to_owned(), "test -f {packet_path}".to_owned()],
     });
     configuration.checks.push(Check {
-        name: "intentional failure".to_owned(),
-        command: "false".to_owned(),
+        name: "always passes".to_owned(),
+        command: "true".to_owned(),
         required: true,
     });
     configuration.agent_commands.push(AgentCommand {
@@ -170,7 +170,7 @@ exit 1
         "main"
     );
     let output = Command::new(env!("CARGO_BIN_EXE_conveyor"))
-        .args(["build", "70", "--yes"])
+        .args(["build", "70", "--open-draft-pr", "--yes"])
         .current_dir(&repository)
         .env("PATH", path)
         .env("CONVEYOR_GH_LOG", &gh_log)
@@ -213,53 +213,18 @@ exit 1
             .unwrap()
             .contains("issue view 70 --repo owner/repository --json body")
     );
-
-    let verify = Command::new(env!("CARGO_BIN_EXE_conveyor"))
-        .args(["verify"])
-        .current_dir(&repository)
-        .env("PATH", format!("{}:{previous_path}", binaries.display()))
-        .output()
-        .unwrap();
-    assert!(verify.status.success());
-    let review = Command::new(env!("CARGO_BIN_EXE_conveyor"))
-        .args(["review", "70"])
-        .current_dir(&repository)
-        .env("PATH", format!("{}:{previous_path}", binaries.display()))
-        .output()
-        .unwrap();
-    assert!(
-        review.status.success(),
-        "review failed: {}",
-        String::from_utf8_lossy(&review.stderr)
-    );
-    assert!(String::from_utf8_lossy(&review.stdout).contains("reviewer completed"));
-    let pr = Command::new(env!("CARGO_BIN_EXE_conveyor"))
-        .args(["pr", "open", "70", "--waive-by", "rick", "--yes"])
-        .current_dir(&repository)
-        .env("PATH", format!("{}:{previous_path}", binaries.display()))
-        .env("CONVEYOR_GH_LOG", &gh_log)
-        .output()
-        .unwrap();
-    assert!(
-        pr.status.success(),
-        "pr open failed: {}",
-        String::from_utf8_lossy(&pr.stderr)
-    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("reviewer completed"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("created draft PR"));
     assert!(repository.join(".conveyor/reviews/70.md").is_file());
     assert!(
         fs::read_to_string(repository.join(".conveyor/reviews/70-delivery.md"))
             .unwrap()
-            .contains("Verification waiver: rick")
+            .contains("Verification waiver: none")
     );
     assert!(
         fs::read_to_string(repository.join(".conveyor/reviews/70-delivery.md"))
             .unwrap()
             .contains("## Repository PR template")
-    );
-    assert!(
-        fs::read_to_string(repository.join(".conveyor/reports/latest.json"))
-            .unwrap()
-            .contains("\"waiver_by\":\"rick\"")
     );
     assert!(
         fs::read_to_string(repository.join(".conveyor/sessions/70.json"))
@@ -273,7 +238,6 @@ exit 1
         "transition_issue",
         "run_implementer",
         "run_reviewer",
-        "waive_verification",
         "transition_session",
         "push_branch",
         "open_draft_pr",
