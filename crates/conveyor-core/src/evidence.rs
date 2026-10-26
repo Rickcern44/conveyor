@@ -19,6 +19,11 @@ impl EvidenceReport {
         }
     }
 
+    /// True when this report was produced for the exact revision being reviewed.
+    pub fn is_for_revision(&self, revision: &str) -> bool {
+        self.revision != "unknown" && self.revision == revision
+    }
+
     /// Renders a stable JSON artifact suitable for local inspection or a PR body.
     pub fn to_json(&self) -> String {
         let checks = self

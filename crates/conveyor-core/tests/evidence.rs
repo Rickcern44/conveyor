@@ -46,3 +46,17 @@ fn parses_its_own_json_evidence_for_later_review() {
         original
     );
 }
+
+#[test]
+fn identifies_evidence_from_the_expected_revision() {
+    let report = EvidenceReport::new(
+        "abc123",
+        VerificationReport {
+            results: Vec::new(),
+        },
+    );
+
+    assert!(report.is_for_revision("abc123"));
+    assert!(!report.is_for_revision("def456"));
+    assert!(!report.is_for_revision("unknown"));
+}

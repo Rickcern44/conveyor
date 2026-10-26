@@ -83,6 +83,7 @@ fn pr(arguments: &[String], directory: &Path) -> Result<String, String> {
     let issue_number = parse_issue_number(number)?;
     let configuration = load_config(directory)?;
     let evidence = read_latest_evidence(directory)?;
+    ensure_evidence_is_current(directory, &evidence)?;
     let decision = decide(&evidence.verification, waiver_by);
     if decision == PrDecision::Blocked {
         return Err(
@@ -199,6 +200,7 @@ fn review(arguments: &[String], directory: &Path) -> Result<String, String> {
         .map_err(|error| format!("could not read latest verification evidence: {error}"))?;
     let evidence = EvidenceReport::from_json(&source)
         .map_err(|error| format!("could not parse latest verification evidence: {error}"))?;
+    ensure_evidence_is_current(directory, &evidence)?;
     let diff_summary = git_output(
         [
             "diff",
@@ -688,6 +690,18 @@ fn current_revision(directory: &Path) -> String {
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
         .filter(|revision| !revision.is_empty())
         .unwrap_or_else(|| "unknown".to_owned())
+}
+
+fn ensure_evidence_is_current(directory: &Path, evidence: &EvidenceReport) -> Result<(), String> {
+    let revision = current_revision(directory);
+    if evidence.is_for_revision(&revision) {
+        Ok(())
+    } else {
+        Err(format!(
+            "verification evidence is stale (recorded {}, current {revision}); run `conveyor verify` again",
+            evidence.revision
+        ))
+    }
 }
 
 fn write_evidence(directory: &Path, evidence: &EvidenceReport) -> Result<(), String> {
