@@ -768,7 +768,12 @@ fn ensure_evidence_is_current(directory: &Path, evidence: &EvidenceReport) -> Re
 
 fn evidence_path(directory: &Path, configuration: &Config) -> Result<std::path::PathBuf, String> {
     let relative = Path::new(&configuration.conveyor.verification_report_path);
-    if relative.is_absolute() {
+    if relative.as_os_str().is_empty()
+        || relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
         return Err("verification_report_path must be relative to the repository".to_owned());
     }
     Ok(directory.join(relative))
@@ -1257,7 +1262,7 @@ mod tests {
     use conveyor_core::task_packet::{AgentRole, TaskPacket};
     use conveyor_core::workflow::IssueState;
 
-    use super::{parse_build_arguments, parse_review_arguments, run, write_packet};
+    use super::{evidence_path, parse_build_arguments, parse_review_arguments, run, write_packet};
 
     fn temporary_directory(name: &str) -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!("conveyor-cli-{name}-{}", std::process::id()));
@@ -1421,6 +1426,16 @@ mod tests {
         let output = run(["status", "70"], &directory).unwrap();
 
         assert!(output.contains("required checks: stale; run verify"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn evidence_path_cannot_escape_the_repository() {
+        let directory = temporary_directory("evidence-path");
+        let mut configuration = Config::new("octo-org/conveyor", "main");
+        configuration.conveyor.verification_report_path = "../outside.json".to_owned();
+
+        assert!(evidence_path(&directory, &configuration).is_err());
         fs::remove_dir_all(directory).unwrap();
     }
 
