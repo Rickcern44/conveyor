@@ -17,12 +17,14 @@ fn temporary_directory(name: &str) -> std::path::PathBuf {
 fn saves_and_loads_an_inspectable_session_record() {
     let directory = temporary_directory("save-load");
     let store = SessionStore::new(&directory);
-    let record = SessionRecord::new(70, IssueState::InProgress, "feat/70-validate-issues");
+    let mut record = SessionRecord::new(70, IssueState::InProgress, "feat/70-validate-issues");
+    record.record_agent_outcome("fixture-agent --packet packet.md", Some(0));
 
     store.save(&record).unwrap();
 
     let saved = fs::read_to_string(directory.join(".conveyor/sessions/70.json")).unwrap();
     assert!(saved.contains("\"issue_number\": 70"));
+    assert!(saved.contains("\"agent_exit_code\": 0"));
     assert_eq!(store.load(70).unwrap(), Some(record));
     fs::remove_dir_all(directory).unwrap();
 }

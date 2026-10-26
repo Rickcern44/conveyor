@@ -40,9 +40,21 @@ impl<'a, P: Probe> Doctor<'a, P> {
             self.probe.github_authentication(),
         );
         for executable in [
-            configuration.agents.planner.as_str(),
-            configuration.agents.implementer.as_str(),
-            configuration.agents.reviewer.as_str(),
+            configuration
+                .agent_command(&configuration.agents.planner)
+                .map_or(configuration.agents.planner.as_str(), |command| {
+                    command.program.as_str()
+                }),
+            configuration
+                .agent_command(&configuration.agents.implementer)
+                .map_or(configuration.agents.implementer.as_str(), |command| {
+                    command.program.as_str()
+                }),
+            configuration
+                .agent_command(&configuration.agents.reviewer)
+                .map_or(configuration.agents.reviewer.as_str(), |command| {
+                    command.program.as_str()
+                }),
         ] {
             collect(
                 &mut findings,

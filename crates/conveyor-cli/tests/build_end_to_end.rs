@@ -105,8 +105,14 @@ exit 1
 
     let mut configuration = Config::new("owner/repository", "main");
     configuration.agents.implementer = "fixture-agent".to_owned();
+    configuration.agents.reviewer = "fixture-reviewer".to_owned();
     configuration.agent_commands.push(AgentCommand {
         name: "fixture-agent".to_owned(),
+        program: "sh".to_owned(),
+        args: vec!["-c".to_owned(), "test -f {packet_path}".to_owned()],
+    });
+    configuration.agent_commands.push(AgentCommand {
+        name: "fixture-reviewer".to_owned(),
         program: "sh".to_owned(),
         args: vec!["-c".to_owned(), "test -f {packet_path}".to_owned()],
     });
@@ -177,6 +183,7 @@ exit 1
         "review failed: {}",
         String::from_utf8_lossy(&review.stderr)
     );
+    assert!(String::from_utf8_lossy(&review.stdout).contains("reviewer completed"));
     let pr = Command::new(env!("CARGO_BIN_EXE_conveyor"))
         .args(["pr", "open", "70", "--yes"])
         .current_dir(&repository)

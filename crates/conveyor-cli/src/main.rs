@@ -191,7 +191,36 @@ fn review(arguments: &[String], directory: &Path) -> Result<String, String> {
         evidence,
     };
     let path = write_review_packet(directory, &packet)?;
-    Ok(format!("created review packet: {}", path.display()))
+    let Some(command) = configuration.agent_command(&configuration.agents.reviewer) else {
+        return Ok(format!("created review packet: {}", path.display()));
+    };
+    let invocation = CommandTemplate {
+        program: command.program.clone(),
+        args: command.args.clone(),
+    }
+    .expand(&TemplateContext {
+        packet_path: path.display().to_string(),
+        repository_root: directory.display().to_string(),
+        issue_number,
+        branch: current_branch(directory)?,
+        role: AgentRole::Reviewer.as_str().to_owned(),
+    })
+    .map_err(|error| format!("invalid reviewer command template: {error}"))?;
+    let output = Command::new(&invocation.program)
+        .args(&invocation.args)
+        .current_dir(directory)
+        .output()
+        .map_err(|error| format!("could not start reviewer `{}`: {error}", invocation.program))?;
+    if !output.status.success() {
+        return Err(format!(
+            "reviewer exited unsuccessfully: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(format!(
+        "created review packet: {}; reviewer completed",
+        path.display()
+    ))
 }
 
 fn write_review_packet(
@@ -297,15 +326,11 @@ fn build(arguments: &[String], directory: &Path) -> Result<String, String> {
             plan.branch
         ));
     }
-    SessionStore::new(directory)
-        .save(&SessionRecord::new(
-            issue_number,
-            plan.next_state,
-            &plan.branch,
-        ))
-        .map_err(|error| {
-            format!("branch and issue updated, but session could not be saved: {error}")
-        })?;
+    let store = SessionStore::new(directory);
+    let mut session = SessionRecord::new(issue_number, plan.next_state, &plan.branch);
+    store.save(&session).map_err(|error| {
+        format!("branch and issue updated, but session could not be saved: {error}")
+    })?;
     let guidance = std::fs::read_to_string(directory.join("AGENTS.md"))
         .unwrap_or_else(|_| "No repository agent guidance was found.".to_owned());
     let packet = TaskPacket::new(
@@ -339,6 +364,16 @@ fn build(arguments: &[String], directory: &Path) -> Result<String, String> {
                 invocation.program
             )
         })?;
+    session.record_agent_outcome(
+        std::iter::once(invocation.program.as_str())
+            .chain(invocation.args.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(" "),
+        output.status.code(),
+    );
+    store
+        .save(&session)
+        .map_err(|error| format!("agent ran, but its outcome could not be saved: {error}"))?;
     if !output.status.success() {
         return Err(format!(
             "implementer exited unsuccessfully: {}",
@@ -647,7 +682,7 @@ fn status(arguments: &[String], directory: &Path) -> Result<String, String> {
             } else {
                 Ok(sessions
                     .iter()
-                    .map(render_session)
+                    .map(|session| render_session(session, directory))
                     .collect::<Vec<_>>()
                     .join("\n\n"))
             }
@@ -658,19 +693,33 @@ fn status(arguments: &[String], directory: &Path) -> Result<String, String> {
                 .load(issue_number)
                 .map_err(|error| error.to_string())?
                 .ok_or_else(|| format!("status: no local session for issue #{issue_number}"))?;
-            Ok(render_session(&session))
+            Ok(render_session(&session, directory))
         }
         _ => Err("Usage: conveyor status [issue]".to_owned()),
     }
 }
 
-fn render_session(session: &SessionRecord) -> String {
+fn render_session(session: &SessionRecord, directory: &Path) -> String {
     let blocker = session.blocker.as_deref().unwrap_or("none");
+    let current_branch = current_branch(directory).unwrap_or_else(|_| "unknown".to_owned());
+    let required_checks = match read_latest_evidence(directory) {
+        Ok(evidence) if evidence.verification.passes_required_checks() => "passed",
+        Ok(_) => "failed",
+        Err(_) => "not run",
+    };
+    let agent = match (&session.agent_command, session.agent_exit_code) {
+        (Some(command), Some(code)) => format!("{command} (exit: {code})"),
+        (Some(command), None) => format!("{command} (exit: unavailable)"),
+        (None, _) => "not run".to_owned(),
+    };
     format!(
-        "issue #{}\nstate: {}\nbranch: {}\nblocker: {}\nnext action: {}",
+        "issue #{}\nstate: {}\nbranch: {}\ncurrent branch: {}\nrequired checks: {}\nagent: {}\nblocker: {}\nnext action: {}",
         session.issue_number,
         session.state.as_str(),
         session.branch,
+        current_branch,
+        required_checks,
+        agent,
         blocker,
         next_action(session.state)
     )
@@ -967,6 +1016,9 @@ mod tests {
         assert!(output.contains("issue #70"));
         assert!(output.contains("state: in-progress"));
         assert!(output.contains("branch: feat/70-readiness"));
+        assert!(output.contains("current branch: unknown"));
+        assert!(output.contains("required checks: not run"));
+        assert!(output.contains("agent: not run"));
         assert!(output.contains("next action: run verification and prepare review"));
         fs::remove_dir_all(directory).unwrap();
     }

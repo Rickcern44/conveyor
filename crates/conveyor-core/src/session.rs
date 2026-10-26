@@ -14,6 +14,8 @@ pub struct SessionRecord {
     pub state: IssueState,
     pub branch: String,
     pub blocker: Option<String>,
+    pub agent_command: Option<String>,
+    pub agent_exit_code: Option<i32>,
 }
 
 impl SessionRecord {
@@ -23,7 +25,15 @@ impl SessionRecord {
             state,
             branch: branch.into(),
             blocker: None,
+            agent_command: None,
+            agent_exit_code: None,
         }
+    }
+
+    /// Records the controlled local agent invocation and its terminal status.
+    pub fn record_agent_outcome(&mut self, command: impl Into<String>, exit_code: Option<i32>) {
+        self.agent_command = Some(command.into());
+        self.agent_exit_code = exit_code;
     }
 }
 
@@ -118,12 +128,22 @@ fn serialize(record: &SessionRecord) -> String {
         .as_deref()
         .map(json_string)
         .unwrap_or_else(|| "null".to_owned());
+    let agent_command = record
+        .agent_command
+        .as_deref()
+        .map(json_string)
+        .unwrap_or_else(|| "null".to_owned());
+    let agent_exit_code = record
+        .agent_exit_code
+        .map_or_else(|| "null".to_owned(), |code| code.to_string());
     format!(
-        "{{\n  \"issue_number\": {},\n  \"state\": {},\n  \"branch\": {},\n  \"blocker\": {}\n}}\n",
+        "{{\n  \"issue_number\": {},\n  \"state\": {},\n  \"branch\": {},\n  \"blocker\": {},\n  \"agent_command\": {},\n  \"agent_exit_code\": {}\n}}\n",
         record.issue_number,
         json_string(record.state.as_str()),
         json_string(&record.branch),
-        blocker
+        blocker,
+        agent_command,
+        agent_exit_code
     )
 }
 
@@ -139,11 +159,25 @@ fn deserialize(source: &str) -> Result<SessionRecord, SessionError> {
     let blocker = (blocker_value != "null")
         .then(|| unquote(blocker_value))
         .transpose()?;
+    let agent_command = optional_value(source, "agent_command")?
+        .filter(|value| *value != "null")
+        .map(unquote)
+        .transpose()?;
+    let agent_exit_code = optional_value(source, "agent_exit_code")?
+        .filter(|value| *value != "null")
+        .map(|value| {
+            value.parse().map_err(|_| {
+                SessionError::InvalidRecord("agent_exit_code must be an integer".to_owned())
+            })
+        })
+        .transpose()?;
     Ok(SessionRecord {
         issue_number,
         state,
         branch,
         blocker,
+        agent_command,
+        agent_exit_code,
     })
 }
 
@@ -163,6 +197,27 @@ fn value<'a>(source: &'a str, key: &str) -> Result<&'a str, SessionError> {
         .next()
         .unwrap_or_default()
         .trim())
+}
+
+fn optional_value<'a>(source: &'a str, key: &str) -> Result<Option<&'a str>, SessionError> {
+    let needle = format!("\"{key}\"");
+    let Some(after_key) = source.find(&needle).and_then(|index| {
+        source[index + needle.len()..]
+            .split_once(':')
+            .map(|(_, rest)| rest)
+    }) else {
+        return Ok(None);
+    };
+    let value = after_key
+        .trim_start()
+        .split([',', '\n', '}'])
+        .next()
+        .unwrap_or_default()
+        .trim();
+    if value.is_empty() {
+        return Err(SessionError::InvalidRecord(format!("invalid {key}")));
+    }
+    Ok(Some(value))
 }
 
 fn json_string(value: &str) -> String {
