@@ -9,6 +9,10 @@ fn default_configuration_has_safe_delivery_policy() {
     assert_eq!(config.conveyor.branch_pattern, "feat/{issue}-build");
     assert_eq!(config.conveyor.remote, "origin");
     assert_eq!(
+        config.conveyor.verification_report_path,
+        ".conveyor/reports/latest.json"
+    );
+    assert_eq!(
         config.conveyor.commit_message_pattern,
         "feat: issue #{issue}"
     );
@@ -43,6 +47,17 @@ fn configuration_round_trips_an_optional_pr_template_path() {
 
     assert!(serialized.contains("pr_template_path = \".github/pull_request_template.md\""));
     assert_eq!(Config::from_toml(&serialized).unwrap(), config);
+}
+
+#[test]
+fn configuration_round_trips_a_custom_verification_report_path() {
+    let mut config = Config::new("octo-org/conveyor", "main");
+    config.conveyor.verification_report_path = ".conveyor/evidence/current.json".to_owned();
+
+    assert_eq!(
+        Config::from_toml(&config.to_toml().unwrap()).unwrap(),
+        config
+    );
 }
 
 #[test]

@@ -84,7 +84,7 @@ fn pr(arguments: &[String], directory: &Path) -> Result<String, String> {
     };
     let issue_number = parse_issue_number(number)?;
     let configuration = load_config(directory)?;
-    let mut evidence = read_latest_evidence(directory)?;
+    let mut evidence = read_evidence(directory, &configuration)?;
     ensure_evidence_is_current(directory, &evidence)?;
     let decision = decide(
         &evidence.verification,
@@ -151,7 +151,7 @@ fn pr(arguments: &[String], directory: &Path) -> Result<String, String> {
     }
     if let PrDecision::AllowedWithWaiver(operator) = &decision {
         evidence.record_waiver(operator);
-        write_evidence(directory, &evidence)?;
+        write_evidence(directory, &configuration, &evidence)?;
         record_audit(directory, issue_number, "waive_verification", operator)?;
     }
     mark_session_in_review(directory, issue_number)?;
@@ -200,9 +200,14 @@ fn pr(arguments: &[String], directory: &Path) -> Result<String, String> {
     Ok(format!("created draft PR: {}", pr_target))
 }
 
-fn read_latest_evidence(directory: &Path) -> Result<EvidenceReport, String> {
-    let source = std::fs::read_to_string(directory.join(".conveyor/reports/latest.json"))
-        .map_err(|error| format!("could not read latest verification evidence: {error}"))?;
+fn read_evidence(directory: &Path, configuration: &Config) -> Result<EvidenceReport, String> {
+    let path = evidence_path(directory, configuration)?;
+    let source = std::fs::read_to_string(&path).map_err(|error| {
+        format!(
+            "could not read verification evidence {}: {error}",
+            path.display()
+        )
+    })?;
     EvidenceReport::from_json(&source)
         .map_err(|error| format!("could not parse latest verification evidence: {error}"))
 }
@@ -220,10 +225,7 @@ fn review(arguments: &[String], directory: &Path) -> Result<String, String> {
     let issue_number = parse_issue_number(number)?;
     let configuration = load_config(directory)?;
     let contract = from_markdown(&fetch_issue_body(number, directory)?);
-    let source = std::fs::read_to_string(directory.join(".conveyor/reports/latest.json"))
-        .map_err(|error| format!("could not read latest verification evidence: {error}"))?;
-    let evidence = EvidenceReport::from_json(&source)
-        .map_err(|error| format!("could not parse latest verification evidence: {error}"))?;
+    let evidence = read_evidence(directory, &configuration)?;
     ensure_evidence_is_current(directory, &evidence)?;
     let checks_passed = evidence.verification.passes_required_checks();
     let diff_summary = git_output(
@@ -717,7 +719,7 @@ fn verify_command(arguments: &[String], directory: &Path) -> Result<String, Stri
         current_revision(directory),
         verify(&LocalCommandRunner { directory }, &configuration.checks),
     );
-    write_evidence(directory, &evidence)?;
+    write_evidence(directory, &configuration, &evidence)?;
     match format {
         ReportFormat::Human => Ok(render_verification_human(&evidence.verification)),
         ReportFormat::Json => Ok(evidence.to_json()),
@@ -748,12 +750,26 @@ fn ensure_evidence_is_current(directory: &Path, evidence: &EvidenceReport) -> Re
     }
 }
 
-fn write_evidence(directory: &Path, evidence: &EvidenceReport) -> Result<(), String> {
-    let reports = directory.join(".conveyor/reports");
-    std::fs::create_dir_all(&reports)
+fn evidence_path(directory: &Path, configuration: &Config) -> Result<std::path::PathBuf, String> {
+    let relative = Path::new(&configuration.conveyor.verification_report_path);
+    if relative.is_absolute() {
+        return Err("verification_report_path must be relative to the repository".to_owned());
+    }
+    Ok(directory.join(relative))
+}
+
+fn write_evidence(
+    directory: &Path,
+    configuration: &Config,
+    evidence: &EvidenceReport,
+) -> Result<(), String> {
+    let path = evidence_path(directory, configuration)?;
+    let reports = path
+        .parent()
+        .ok_or("verification_report_path must name a file")?;
+    std::fs::create_dir_all(reports)
         .map_err(|error| format!("could not create {}: {error}", reports.display()))?;
-    let temporary = reports.join(".latest.json.tmp");
-    let path = reports.join("latest.json");
+    let temporary = path.with_extension("tmp");
     std::fs::write(&temporary, evidence.to_json())
         .map_err(|error| format!("could not write {}: {error}", temporary.display()))?;
     std::fs::rename(&temporary, &path)
@@ -959,14 +975,15 @@ fn render_session(session: &SessionRecord, directory: &Path) -> String {
     let blocker = session.blocker.as_deref().unwrap_or("none");
     let blocker_owner = session.blocker_owner.as_deref().unwrap_or("none");
     let current_branch = current_branch(directory).unwrap_or_else(|_| "unknown".to_owned());
-    let required_checks = match read_latest_evidence(directory) {
-        Ok(evidence) if evidence.verification.passes_required_checks() => "passed".to_owned(),
-        Ok(evidence) if evidence.waiver_by.is_some() => {
-            format!("waived by {}", evidence.waiver_by.unwrap_or_default())
-        }
-        Ok(_) => "failed".to_owned(),
-        Err(_) => "not run".to_owned(),
-    };
+    let required_checks =
+        match load_config(directory).and_then(|config| read_evidence(directory, &config)) {
+            Ok(evidence) if evidence.verification.passes_required_checks() => "passed".to_owned(),
+            Ok(evidence) if evidence.waiver_by.is_some() => {
+                format!("waived by {}", evidence.waiver_by.unwrap_or_default())
+            }
+            Ok(_) => "failed".to_owned(),
+            Err(_) => "not run".to_owned(),
+        };
     let agent = match (&session.agent_command, session.agent_exit_code) {
         (Some(command), Some(code)) => format!("{command} (exit: {code})"),
         (Some(command), None) => format!("{command} (exit: unavailable)"),
@@ -1356,6 +1373,8 @@ mod tests {
     fn verify_runs_configured_checks_and_reports_a_pass() {
         let directory = temporary_directory("verify");
         let mut configuration = Config::new("octo-org/conveyor", "main");
+        configuration.conveyor.verification_report_path =
+            ".conveyor/evidence/current.json".to_owned();
         configuration.checks.push(Check {
             name: "always passes".to_owned(),
             command: "true".to_owned(),
@@ -1371,7 +1390,8 @@ mod tests {
 
         assert!(output.contains("verification: passed"));
         assert!(output.contains("always passes: passed"));
-        let evidence = fs::read_to_string(directory.join(".conveyor/reports/latest.json")).unwrap();
+        let evidence =
+            fs::read_to_string(directory.join(".conveyor/evidence/current.json")).unwrap();
         assert!(evidence.contains("\"passed_required_checks\":true"));
         assert!(evidence.contains("\"command\":\"true\""));
         fs::remove_dir_all(directory).unwrap();

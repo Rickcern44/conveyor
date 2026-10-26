@@ -60,7 +60,9 @@ conveyor pr open 70
 conveyor audit 70
 ```
 
-`verify` writes structured evidence to `.conveyor/reports/latest.json`.
+`verify` writes structured evidence to `.conveyor/reports/latest.json` by
+default; configure `verification_report_path` to use another repository-local
+path.
 `review` creates a review packet and optionally runs the configured reviewer.
 `pr open` requires passing required checks (or `--waive-by <operator>`), shows
 the push and draft-PR plan, and requests consent unless `--yes` is supplied.
@@ -87,6 +89,7 @@ remote = "origin"
 branch_pattern = "work/{issue}/implementation"
 commit_message_pattern = "feat: issue #{issue}"
 pr_template_path = ".github/pull_request_template.md" # optional
+verification_report_path = ".conveyor/reports/latest.json"
 ```
 
 ## Direct local agent adapter

@@ -21,6 +21,7 @@ pub struct ConveyorConfig {
     pub branch_pattern: String,
     pub commit_message_pattern: String,
     pub pr_template_path: Option<String>,
+    pub verification_report_path: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -103,6 +104,7 @@ impl Config {
                 branch_pattern: "feat/{issue}-build".to_owned(),
                 commit_message_pattern: "feat: issue #{issue}".to_owned(),
                 pr_template_path: None,
+                verification_report_path: ".conveyor/reports/latest.json".to_owned(),
             },
             github: GithubConfig {
                 repository: repository.into(),
@@ -217,12 +219,13 @@ impl Config {
             .map(|path| format!("pr_template_path = {}\n", quote(path)))
             .unwrap_or_default();
         Ok(format!(
-            "[conveyor]\nversion = {}\nremote = {}\ntarget_branch = {}\nbranch_pattern = {}\ncommit_message_pattern = {}\n{}\n[github]\nrepository = {}\n\n[workflow]\nready_label = {}\nin_progress_label = {}\nblocked_label = {}\ndraft_prs_only = {}\nrequire_confirmation_for = [{}]\n\n[agents]\nplanner = {}\nimplementer = {}\nreviewer = {}\n{}{}",
+            "[conveyor]\nversion = {}\nremote = {}\ntarget_branch = {}\nbranch_pattern = {}\ncommit_message_pattern = {}\nverification_report_path = {}\n{}\n[github]\nrepository = {}\n\n[workflow]\nready_label = {}\nin_progress_label = {}\nblocked_label = {}\ndraft_prs_only = {}\nrequire_confirmation_for = [{}]\n\n[agents]\nplanner = {}\nimplementer = {}\nreviewer = {}\n{}{}",
             self.conveyor.version,
             quote(&self.conveyor.remote),
             quote(&self.conveyor.target_branch),
             quote(&self.conveyor.branch_pattern),
             quote(&self.conveyor.commit_message_pattern),
+            quote(&self.conveyor.verification_report_path),
             pr_template_path,
             quote(&self.github.repository),
             quote(&self.workflow.ready_label),
@@ -323,6 +326,11 @@ impl Config {
                     .get("conveyor.pr_template_path")
                     .map(|value| parse_string(value))
                     .transpose()?,
+                verification_report_path: values
+                    .get("conveyor.verification_report_path")
+                    .map(|value| parse_string(value))
+                    .transpose()?
+                    .unwrap_or_else(|| ".conveyor/reports/latest.json".to_owned()),
             },
             github: GithubConfig {
                 repository: parse_string(required(&values, "github.repository")?)?,
