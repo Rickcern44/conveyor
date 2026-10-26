@@ -20,6 +20,7 @@ pub struct ConveyorConfig {
     pub target_branch: String,
     pub branch_pattern: String,
     pub commit_message_pattern: String,
+    pub pr_template_path: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -101,6 +102,7 @@ impl Config {
                 target_branch: target_branch.into(),
                 branch_pattern: "feat/{issue}-build".to_owned(),
                 commit_message_pattern: "feat: issue #{issue}".to_owned(),
+                pr_template_path: None,
             },
             github: GithubConfig {
                 repository: repository.into(),
@@ -208,13 +210,20 @@ impl Config {
                 )
             })
             .collect::<String>();
+        let pr_template_path = self
+            .conveyor
+            .pr_template_path
+            .as_deref()
+            .map(|path| format!("pr_template_path = {}\n", quote(path)))
+            .unwrap_or_default();
         Ok(format!(
-            "[conveyor]\nversion = {}\nremote = {}\ntarget_branch = {}\nbranch_pattern = {}\ncommit_message_pattern = {}\n\n[github]\nrepository = {}\n\n[workflow]\nready_label = {}\nin_progress_label = {}\nblocked_label = {}\ndraft_prs_only = {}\nrequire_confirmation_for = [{}]\n\n[agents]\nplanner = {}\nimplementer = {}\nreviewer = {}\n{}{}",
+            "[conveyor]\nversion = {}\nremote = {}\ntarget_branch = {}\nbranch_pattern = {}\ncommit_message_pattern = {}\n{}\n[github]\nrepository = {}\n\n[workflow]\nready_label = {}\nin_progress_label = {}\nblocked_label = {}\ndraft_prs_only = {}\nrequire_confirmation_for = [{}]\n\n[agents]\nplanner = {}\nimplementer = {}\nreviewer = {}\n{}{}",
             self.conveyor.version,
             quote(&self.conveyor.remote),
             quote(&self.conveyor.target_branch),
             quote(&self.conveyor.branch_pattern),
             quote(&self.conveyor.commit_message_pattern),
+            pr_template_path,
             quote(&self.github.repository),
             quote(&self.workflow.ready_label),
             quote(&self.workflow.in_progress_label),
@@ -310,6 +319,10 @@ impl Config {
                 target_branch: parse_string(required(&values, "conveyor.target_branch")?)?,
                 branch_pattern,
                 commit_message_pattern,
+                pr_template_path: values
+                    .get("conveyor.pr_template_path")
+                    .map(|value| parse_string(value))
+                    .transpose()?,
             },
             github: GithubConfig {
                 repository: parse_string(required(&values, "github.repository")?)?,

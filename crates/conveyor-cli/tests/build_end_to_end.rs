@@ -104,6 +104,7 @@ exit 1
     }
 
     let mut configuration = Config::new("owner/repository", "main");
+    configuration.conveyor.pr_template_path = Some(".github/pull_request_template.md".to_owned());
     configuration.agents.implementer = "fixture-agent".to_owned();
     configuration.agents.reviewer = "fixture-reviewer".to_owned();
     configuration.agent_commands.push(AgentCommand {
@@ -126,7 +127,17 @@ exit 1
         configuration.to_toml().unwrap(),
     )
     .unwrap();
-    command("git", &["add", ".conveyor.toml"], &repository);
+    fs::create_dir_all(repository.join(".github")).unwrap();
+    fs::write(
+        repository.join(".github/pull_request_template.md"),
+        "## Repository PR template\n\n- [ ] Reviewed\n",
+    )
+    .unwrap();
+    command(
+        "git",
+        &["add", ".conveyor.toml", ".github/pull_request_template.md"],
+        &repository,
+    );
     command("git", &["commit", "-m", "configure conveyor"], &repository);
     command("git", &["push"], &repository);
 
@@ -209,6 +220,11 @@ exit 1
         fs::read_to_string(repository.join(".conveyor/reviews/70-delivery.md"))
             .unwrap()
             .contains("Verification waiver: rick")
+    );
+    assert!(
+        fs::read_to_string(repository.join(".conveyor/reviews/70-delivery.md"))
+            .unwrap()
+            .contains("## Repository PR template")
     );
     assert!(
         fs::read_to_string(repository.join(".conveyor/reports/latest.json"))

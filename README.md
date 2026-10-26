@@ -81,6 +81,7 @@ whitespace:
 remote = "origin"
 branch_pattern = "work/{issue}/implementation"
 commit_message_pattern = "feat: issue #{issue}"
+pr_template_path = ".github/pull_request_template.md" # optional
 ```
 
 ## Direct local agent adapter

@@ -113,10 +113,23 @@ fn pr(arguments: &[String], directory: &Path) -> Result<String, String> {
     };
     let review_body = std::fs::read_to_string(&review_path)
         .map_err(|error| format!("could not read {}: {error}", review_path.display()))?;
+    let pr_body_source = match &configuration.conveyor.pr_template_path {
+        Some(path) => {
+            let template_path = directory.join(path);
+            let template = std::fs::read_to_string(&template_path).map_err(|error| {
+                format!(
+                    "could not read PR template {}: {error}",
+                    template_path.display()
+                )
+            })?;
+            format!("{template}\n\n{review_body}")
+        }
+        None => review_body,
+    };
     let delivery_path = review_path.with_file_name(format!("{issue_number}-delivery.md"));
     std::fs::write(
         &delivery_path,
-        delivery_summary(&review_body, Some(&waiver_summary)),
+        delivery_summary(&pr_body_source, Some(&waiver_summary)),
     )
     .map_err(|error| format!("could not write {}: {error}", delivery_path.display()))?;
     let summary = format!(

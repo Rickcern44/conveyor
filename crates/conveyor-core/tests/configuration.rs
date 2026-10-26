@@ -35,6 +35,17 @@ fn configuration_round_trips_a_custom_delivery_remote() {
 }
 
 #[test]
+fn configuration_round_trips_an_optional_pr_template_path() {
+    let mut config = Config::new("octo-org/conveyor", "main");
+    config.conveyor.pr_template_path = Some(".github/pull_request_template.md".to_owned());
+
+    let serialized = config.to_toml().unwrap();
+
+    assert!(serialized.contains("pr_template_path = \".github/pull_request_template.md\""));
+    assert_eq!(Config::from_toml(&serialized).unwrap(), config);
+}
+
+#[test]
 fn expands_the_configured_branch_pattern_for_an_issue() {
     let mut config = Config::new("octo-org/conveyor", "main");
     config.conveyor.branch_pattern = "work/{issue}/implementation".to_owned();
