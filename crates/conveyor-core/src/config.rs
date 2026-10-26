@@ -10,6 +10,7 @@ pub struct Config {
     pub workflow: WorkflowConfig,
     pub agents: AgentConfig,
     pub checks: Vec<Check>,
+    pub agent_commands: Vec<AgentCommand>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -26,6 +27,7 @@ pub struct GithubConfig {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkflowConfig {
     pub ready_label: String,
+    pub in_progress_label: String,
     pub blocked_label: String,
     pub draft_prs_only: bool,
     pub require_confirmation_for: Vec<ConfirmationAction>,
@@ -43,6 +45,14 @@ pub struct Check {
     pub name: String,
     pub command: String,
     pub required: bool,
+}
+
+/// A named, repository-approved direct CLI adapter template.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AgentCommand {
+    pub name: String,
+    pub program: String,
+    pub args: Vec<String>,
 }
 
 /// A side effect that requires an operator confirmation by default.
@@ -91,6 +101,7 @@ impl Config {
             },
             workflow: WorkflowConfig {
                 ready_label: "ready-for-build".to_owned(),
+                in_progress_label: "in-progress".to_owned(),
                 blocked_label: "blocked".to_owned(),
                 draft_prs_only: true,
                 require_confirmation_for: vec![
@@ -106,7 +117,15 @@ impl Config {
                 reviewer: "claude".to_owned(),
             },
             checks: Vec::new(),
+            agent_commands: Vec::new(),
         }
+    }
+
+    /// Finds the explicit direct-command template selected by an agent role.
+    pub fn agent_command(&self, name: &str) -> Option<&AgentCommand> {
+        self.agent_commands
+            .iter()
+            .find(|command| command.name == name)
     }
 
     /// Serializes the supported configuration surface as stable TOML.
@@ -133,12 +152,31 @@ impl Config {
                 )
             })
             .collect::<String>();
+        let agent_commands = self
+            .agent_commands
+            .iter()
+            .map(|command| {
+                let args = command
+                    .args
+                    .iter()
+                    .map(|argument| quote(argument))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "\n[[agent_commands]]\nname = {}\nprogram = {}\nargs = [{}]\n",
+                    quote(&command.name),
+                    quote(&command.program),
+                    args
+                )
+            })
+            .collect::<String>();
         Ok(format!(
-            "[conveyor]\nversion = {}\ntarget_branch = {}\n\n[github]\nrepository = {}\n\n[workflow]\nready_label = {}\nblocked_label = {}\ndraft_prs_only = {}\nrequire_confirmation_for = [{}]\n\n[agents]\nplanner = {}\nimplementer = {}\nreviewer = {}\n{}",
+            "[conveyor]\nversion = {}\ntarget_branch = {}\n\n[github]\nrepository = {}\n\n[workflow]\nready_label = {}\nin_progress_label = {}\nblocked_label = {}\ndraft_prs_only = {}\nrequire_confirmation_for = [{}]\n\n[agents]\nplanner = {}\nimplementer = {}\nreviewer = {}\n{}{}",
             self.conveyor.version,
             quote(&self.conveyor.target_branch),
             quote(&self.github.repository),
             quote(&self.workflow.ready_label),
+            quote(&self.workflow.in_progress_label),
             quote(&self.workflow.blocked_label),
             self.workflow.draft_prs_only,
             quoted_actions,
@@ -146,6 +184,7 @@ impl Config {
             quote(&self.agents.implementer),
             quote(&self.agents.reviewer),
             checks,
+            agent_commands,
         ))
     }
 
@@ -154,6 +193,7 @@ impl Config {
         let mut section = "";
         let mut values = std::collections::BTreeMap::new();
         let mut check_values = Vec::<std::collections::BTreeMap<String, String>>::new();
+        let mut agent_command_values = Vec::<std::collections::BTreeMap<String, String>>::new();
         for raw_line in source.lines() {
             let line = raw_line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -162,6 +202,11 @@ impl Config {
             if line == "[[checks]]" {
                 section = "checks";
                 check_values.push(std::collections::BTreeMap::new());
+                continue;
+            }
+            if line == "[[agent_commands]]" {
+                section = "agent_commands";
+                agent_command_values.push(std::collections::BTreeMap::new());
                 continue;
             }
             if line.starts_with('[') && line.ends_with(']') {
@@ -177,6 +222,11 @@ impl Config {
                 check_values
                     .last_mut()
                     .expect("checks section has an entry")
+                    .insert(key.trim().to_owned(), value.trim().to_owned());
+            } else if section == "agent_commands" {
+                agent_command_values
+                    .last_mut()
+                    .expect("agent_commands section has an entry")
                     .insert(key.trim().to_owned(), value.trim().to_owned());
             } else {
                 values.insert(format!("{section}.{}", key.trim()), value.trim().to_owned());
@@ -206,6 +256,11 @@ impl Config {
             },
             workflow: WorkflowConfig {
                 ready_label: parse_string(required(&values, "workflow.ready_label")?)?,
+                in_progress_label: values
+                    .get("workflow.in_progress_label")
+                    .map(|value| parse_string(value))
+                    .transpose()?
+                    .unwrap_or_else(|| "in-progress".to_owned()),
                 blocked_label: parse_string(required(&values, "workflow.blocked_label")?)?,
                 draft_prs_only: parse_bool(required(&values, "workflow.draft_prs_only")?)?,
                 require_confirmation_for: actions,
@@ -218,6 +273,10 @@ impl Config {
             checks: check_values
                 .iter()
                 .map(parse_check)
+                .collect::<Result<Vec<_>, _>>()?,
+            agent_commands: agent_command_values
+                .iter()
+                .map(parse_agent_command)
                 .collect::<Result<Vec<_>, _>>()?,
         })
     }
@@ -310,6 +369,16 @@ fn parse_check(values: &std::collections::BTreeMap<String, String>) -> Result<Ch
                 key: "checks.required",
                 value: required_value.to_owned(),
             })?,
+    })
+}
+
+fn parse_agent_command(
+    values: &std::collections::BTreeMap<String, String>,
+) -> Result<AgentCommand, ConfigError> {
+    Ok(AgentCommand {
+        name: parse_string(check_required(values, "name")?)?,
+        program: parse_string(check_required(values, "program")?)?,
+        args: parse_array(check_required(values, "args")?)?,
     })
 }
 

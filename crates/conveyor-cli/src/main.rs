@@ -1,10 +1,14 @@
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::Path;
 use std::process::Command;
 
+use conveyor_core::agent_adapter::{CommandTemplate, TemplateContext};
+use conveyor_core::build_plan::{BuildInput, prepare};
 use conveyor_core::config::Config;
+use conveyor_core::confirmation::{ConfirmationPrompt, Decision, authorize};
 use conveyor_core::doctor::{Doctor, FindingKind, Probe, ProbeResult};
+use conveyor_core::evidence::EvidenceReport;
 use conveyor_core::issue_contract::{from_markdown, validate};
 use conveyor_core::session::{SessionRecord, SessionStore};
 use conveyor_core::task_packet::{AgentRole, TaskPacket};
@@ -47,8 +51,272 @@ where
         "status" => status(&arguments[1..], directory),
         "verify" => verify_command(&arguments[1..], directory),
         "handoff" => handoff(&arguments[1..], directory),
+        "build" => build(&arguments[1..], directory),
         "--help" | "-h" | "help" => Ok(usage().to_owned()),
         _ => Err(format!("unknown command: {command}\n\n{}", usage())),
+    }
+}
+
+fn build(arguments: &[String], directory: &Path) -> Result<String, String> {
+    let (number, explicit_yes) = match arguments {
+        [number] => (number.as_str(), false),
+        [number, flag] if flag == "--yes" => (number.as_str(), true),
+        _ => return Err("Usage: conveyor build <number> [--yes]".to_owned()),
+    };
+    let issue_number = parse_issue_number(number)?;
+    let configuration = load_config(directory)?;
+    let labels = issue_labels(number, &configuration, directory)?;
+    let state = if labels
+        .iter()
+        .any(|label| label == &configuration.workflow.ready_label)
+    {
+        IssueState::ReadyForBuild
+    } else {
+        IssueState::NeedsSpec
+    };
+    ensure_on_target_branch(directory, &configuration.conveyor.target_branch)?;
+    let plan = prepare(BuildInput {
+        issue_number,
+        state,
+        worktree_clean: worktree_is_clean(directory)?,
+        worktree_up_to_date: worktree_is_up_to_date(directory)?,
+        branch: format!("feat/{issue_number}-build"),
+    })
+    .map_err(|error| error.to_string())?;
+    let contract = from_markdown(&fetch_issue_body(number, directory)?);
+    let validation = validate(&contract);
+    if !validation.is_valid() {
+        return Err(format!(
+            "issue #{issue_number} is not ready for build; missing:\n{}",
+            validation
+                .missing
+                .iter()
+                .map(|requirement| format!("- {}", requirement.label()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+    }
+    let command = configuration
+        .agent_command(&configuration.agents.implementer)
+        .ok_or_else(|| {
+            format!(
+                "no [[agent_commands]] entry named `{}` is configured for the implementer role",
+                configuration.agents.implementer
+            )
+        })?
+        .clone();
+    let summary = format!(
+        "Issue #{issue_number}\nBranch to create: {}\nGitHub label transition: {} -> {}\nLocal session: .conveyor/sessions/{issue_number}.json\nAgent command: {}",
+        plan.branch,
+        configuration.workflow.ready_label,
+        configuration.workflow.in_progress_label,
+        command.program
+    );
+    if authorize(explicit_yes, &TerminalPrompt, &summary) == Decision::Declined {
+        return Err("build cancelled; no Git or GitHub changes were made".to_owned());
+    }
+    run_command(
+        "git",
+        ["switch", "-c", plan.branch.as_str()],
+        directory,
+        "could not create build branch",
+    )?;
+    if let Err(error) = transition_issue_to_in_progress(number, &configuration, directory) {
+        return Err(format!(
+            "branch {} was created, but the issue transition failed: {error}",
+            plan.branch
+        ));
+    }
+    SessionStore::new(directory)
+        .save(&SessionRecord::new(
+            issue_number,
+            plan.next_state,
+            &plan.branch,
+        ))
+        .map_err(|error| {
+            format!("branch and issue updated, but session could not be saved: {error}")
+        })?;
+    let guidance = std::fs::read_to_string(directory.join("AGENTS.md"))
+        .unwrap_or_else(|_| "No repository agent guidance was found.".to_owned());
+    let packet = TaskPacket::new(
+        issue_number,
+        AgentRole::Implementer,
+        &plan.branch,
+        contract,
+        guidance,
+        configuration.checks,
+    );
+    let packet_path = write_packet(directory, &packet)?;
+    let invocation = CommandTemplate {
+        program: command.program,
+        args: command.args,
+    }
+    .expand(&TemplateContext {
+        packet_path: packet_path.display().to_string(),
+        repository_root: directory.display().to_string(),
+        issue_number,
+        branch: plan.branch.clone(),
+        role: AgentRole::Implementer.as_str().to_owned(),
+    })
+    .map_err(|error| format!("invalid implementer command template: {error}"))?;
+    let output = Command::new(&invocation.program)
+        .args(&invocation.args)
+        .current_dir(directory)
+        .output()
+        .map_err(|error| {
+            format!(
+                "could not start implementer `{}`: {error}",
+                invocation.program
+            )
+        })?;
+    if !output.status.success() {
+        return Err(format!(
+            "implementer exited unsuccessfully: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(format!(
+        "build session started for issue #{issue_number} on {}; implementer completed",
+        plan.branch
+    ))
+}
+
+struct TerminalPrompt;
+
+impl ConfirmationPrompt for TerminalPrompt {
+    fn confirm(&self, summary: &str) -> bool {
+        println!("Conveyor will perform these changes:\n\n{summary}\n");
+        print!("Proceed? [y/N]: ");
+        if io::stdout().flush().is_err() {
+            return false;
+        }
+        let mut response = String::new();
+        io::stdin()
+            .read_line(&mut response)
+            .is_ok_and(|_| matches!(response.trim(), "y" | "Y" | "yes" | "YES"))
+    }
+}
+
+fn issue_labels(
+    number: &str,
+    configuration: &Config,
+    directory: &Path,
+) -> Result<Vec<String>, String> {
+    let output = Command::new("gh")
+        .args([
+            "issue",
+            "view",
+            number,
+            "--repo",
+            &configuration.github.repository,
+            "--json",
+            "labels",
+            "--jq",
+            ".labels[].name",
+        ])
+        .current_dir(directory)
+        .output()
+        .map_err(|error| format!("could not run gh: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "could not read issue #{number} labels: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect())
+}
+
+fn ensure_on_target_branch(directory: &Path, target_branch: &str) -> Result<(), String> {
+    let output = Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(directory)
+        .output()
+        .map_err(|error| format!("could not inspect current branch: {error}"))?;
+    let current_branch = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    (output.status.success() && current_branch == target_branch)
+        .then_some(())
+        .ok_or_else(|| {
+            format!("build must start on target branch `{target_branch}`, found `{current_branch}`")
+        })
+}
+
+fn worktree_is_clean(directory: &Path) -> Result<bool, String> {
+    let output = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(directory)
+        .output()
+        .map_err(|error| format!("could not inspect worktree: {error}"))?;
+    if !output.status.success() {
+        return Err("could not inspect worktree status".to_owned());
+    }
+    Ok(output.stdout.is_empty())
+}
+
+fn worktree_is_up_to_date(directory: &Path) -> Result<bool, String> {
+    let upstream = Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "@{upstream}"])
+        .current_dir(directory)
+        .output()
+        .map_err(|error| format!("could not inspect upstream branch: {error}"))?;
+    if !upstream.status.success() {
+        return Err("target branch has no configured upstream".to_owned());
+    }
+    let output = Command::new("git")
+        .args(["rev-list", "--count", "HEAD..@{upstream}"])
+        .current_dir(directory)
+        .output()
+        .map_err(|error| format!("could not inspect upstream revision: {error}"))?;
+    let commits_behind = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| "could not determine upstream revision".to_owned())?;
+    Ok(output.status.success() && commits_behind == 0)
+}
+
+fn transition_issue_to_in_progress(
+    number: &str,
+    configuration: &Config,
+    directory: &Path,
+) -> Result<(), String> {
+    run_command(
+        "gh",
+        [
+            "issue",
+            "edit",
+            number,
+            "--repo",
+            &configuration.github.repository,
+            "--remove-label",
+            &configuration.workflow.ready_label,
+            "--add-label",
+            &configuration.workflow.in_progress_label,
+        ],
+        directory,
+        "could not transition issue to in-progress",
+    )
+}
+
+fn run_command<const N: usize>(
+    program: &str,
+    arguments: [&str; N],
+    directory: &Path,
+    context: &str,
+) -> Result<(), String> {
+    let output = Command::new(program)
+        .args(arguments)
+        .current_dir(directory)
+        .output()
+        .map_err(|error| format!("{context}: {error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{context}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
     }
 }
 
@@ -108,11 +376,39 @@ fn write_packet(directory: &Path, packet: &TaskPacket) -> Result<std::path::Path
 fn verify_command(arguments: &[String], directory: &Path) -> Result<String, String> {
     let format = parse_format(arguments)?;
     let configuration = load_config(directory)?;
-    let report = verify(&LocalCommandRunner { directory }, &configuration.checks);
+    let evidence = EvidenceReport::new(
+        current_revision(directory),
+        verify(&LocalCommandRunner { directory }, &configuration.checks),
+    );
+    write_evidence(directory, &evidence)?;
     match format {
-        ReportFormat::Human => Ok(render_verification_human(&report)),
-        ReportFormat::Json => Ok(render_verification_json(&report)),
+        ReportFormat::Human => Ok(render_verification_human(&evidence.verification)),
+        ReportFormat::Json => Ok(evidence.to_json()),
     }
+}
+
+fn current_revision(directory: &Path) -> String {
+    Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(directory)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .filter(|revision| !revision.is_empty())
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
+fn write_evidence(directory: &Path, evidence: &EvidenceReport) -> Result<(), String> {
+    let reports = directory.join(".conveyor/reports");
+    std::fs::create_dir_all(&reports)
+        .map_err(|error| format!("could not create {}: {error}", reports.display()))?;
+    let temporary = reports.join(".latest.json.tmp");
+    let path = reports.join("latest.json");
+    std::fs::write(&temporary, evidence.to_json())
+        .map_err(|error| format!("could not write {}: {error}", temporary.display()))?;
+    std::fs::rename(&temporary, &path)
+        .map_err(|error| format!("could not save {}: {error}", path.display()))
 }
 
 fn load_config(directory: &Path) -> Result<Config, String> {
@@ -169,34 +465,6 @@ fn render_verification_human(report: &VerificationReport) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     format!("verification: {status}\n{checks}")
-}
-
-fn render_verification_json(report: &VerificationReport) -> String {
-    let checks = report
-        .results
-        .iter()
-        .map(|result| {
-            format!(
-                "{{\"name\":{},\"command\":{},\"required\":{},\"outcome\":{},\"exit_code\":{},\"duration_ms\":{}}}",
-                json_string(&result.name),
-                json_string(&result.command),
-                result.required,
-                json_string(match result.outcome { Outcome::Passed => "passed", Outcome::Failed => "failed" }),
-                result.exit_code.map_or_else(|| "null".to_owned(), |code| code.to_string()),
-                result.duration_ms
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(",");
-    format!(
-        "{{\"passed_required_checks\":{},\"checks\":[{}]}}",
-        report.passes_required_checks(),
-        checks
-    )
-}
-
-fn json_string(value: &str) -> String {
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('\"', "\\\""))
 }
 
 fn status(arguments: &[String], directory: &Path) -> Result<String, String> {
@@ -450,7 +718,7 @@ fn initialize(arguments: &[String], directory: &Path) -> Result<String, String> 
 }
 
 fn usage() -> &'static str {
-    "Usage:\n  conveyor init --repository <owner/repository> [--target-branch <branch>]\n  conveyor doctor\n  conveyor status [issue]\n  conveyor issue validate <number> [--format human|json]\n  conveyor handoff <number> --role <planner|implementer|reviewer>\n  conveyor verify [--format human|json]"
+    "Usage:\n  conveyor init --repository <owner/repository> [--target-branch <branch>]\n  conveyor doctor\n  conveyor status [issue]\n  conveyor issue validate <number> [--format human|json]\n  conveyor handoff <number> --role <planner|implementer|reviewer>\n  conveyor build <number> [--yes]\n  conveyor verify [--format human|json]"
 }
 
 #[cfg(test)]
@@ -552,6 +820,9 @@ mod tests {
 
         assert!(output.contains("verification: passed"));
         assert!(output.contains("always passes: passed"));
+        let evidence = fs::read_to_string(directory.join(".conveyor/reports/latest.json")).unwrap();
+        assert!(evidence.contains("\"passed_required_checks\":true"));
+        assert!(evidence.contains("\"command\":\"true\""));
         fs::remove_dir_all(directory).unwrap();
     }
 

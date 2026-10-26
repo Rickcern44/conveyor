@@ -27,6 +27,8 @@ must not create branches, alter GitHub issues, push, or open pull requests.
 
 - Read-only behavior is the default.
 - Never add a side effect that bypasses explicit policy or operator consent.
+- State-changing commands prompt for confirmation by default; `--yes` is the
+  explicit non-interactive equivalent and is never a policy bypass.
 - Avoid logging tokens, secrets, or full repository contents.
 - Maintain clear human-readable errors and structured output paths for CLI
   commands.

@@ -38,5 +38,27 @@ conveyor issue validate 70
 conveyor issue validate 70 --format json
 ```
 
-The current slice does not create branches, change GitHub issues, push, or
-open pull requests.
+Read-only commands never create branches or change GitHub. `conveyor build`
+lists its branch, label, session, and agent actions before asking for operator
+confirmation (or requiring explicit `--yes` for automation). Pushes and pull
+requests are not implemented yet.
+
+## Direct local agent adapter
+
+Configure an explicit command template before running `conveyor build`. The
+template is invoked directly (without a shell) only after build preflight and
+operator confirmation pass.
+
+```toml
+[agents]
+implementer = "local-implementer"
+
+[[agent_commands]]
+name = "local-implementer"
+program = "./scripts/conveyor-implementer"
+args = ["--packet", "{packet_path}"]
+```
+
+Supported placeholders are `{packet_path}`, `{repo_root}`, `{issue_number}`,
+`{branch}`, and `{role}`. The packet instructs the agent not to perform Git or
+GitHub delivery actions; Conveyor retains that authority.
