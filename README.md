@@ -47,6 +47,8 @@ packet, then runs the configured implementer.
 ```sh
 conveyor build 70
 conveyor status 70
+conveyor block 70 --reason "Waiting for API access" --owner platform-team
+conveyor resume 70 --to in-progress
 conveyor verify
 conveyor review 70
 conveyor pr open 70
@@ -61,6 +63,10 @@ It never creates a non-draft PR. `audit` prints the JSONL record of completed
 branch, issue, agent, push, and PR actions for the issue.
 Named verification waivers are retained in the structured evidence and audit
 trail as well as in the draft PR body.
+
+Use `block` to record an interruption and its decision owner locally. `resume`
+requires an explicit next workflow state, clears that blocker, and records the
+decision in the audit trail; it does not rerun an agent automatically.
 
 Use `--agent <name>` on `build` or `review` to select another configured
 `[[agent_commands]]` adapter for that one invocation. The configured role

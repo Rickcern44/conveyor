@@ -5,7 +5,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::workflow::IssueState;
+use crate::workflow::{IssueState, TransitionError};
 
 /// Local execution metadata for one issue.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -14,6 +14,7 @@ pub struct SessionRecord {
     pub state: IssueState,
     pub branch: String,
     pub blocker: Option<String>,
+    pub blocker_owner: Option<String>,
     pub agent_command: Option<String>,
     pub agent_exit_code: Option<i32>,
     pub require_push_confirmation: bool,
@@ -27,6 +28,7 @@ impl SessionRecord {
             state,
             branch: branch.into(),
             blocker: None,
+            blocker_owner: None,
             agent_command: None,
             agent_exit_code: None,
             require_push_confirmation: true,
@@ -44,6 +46,26 @@ impl SessionRecord {
     pub fn set_delivery_confirmation_policy(&mut self, push: bool, open_pr: bool) {
         self.require_push_confirmation = push;
         self.require_pr_confirmation = open_pr;
+    }
+
+    /// Marks a session blocked with the decision owner responsible for release.
+    pub fn block(
+        &mut self,
+        reason: impl Into<String>,
+        owner: impl Into<String>,
+    ) -> Result<(), TransitionError> {
+        self.state = self.state.transition_to(IssueState::Blocked)?;
+        self.blocker = Some(reason.into());
+        self.blocker_owner = Some(owner.into());
+        Ok(())
+    }
+
+    /// Clears a blocker only when the workflow permits the selected next state.
+    pub fn resume(&mut self, next: IssueState) -> Result<(), TransitionError> {
+        self.state = self.state.transition_to(next)?;
+        self.blocker = None;
+        self.blocker_owner = None;
+        Ok(())
     }
 }
 
@@ -138,6 +160,11 @@ fn serialize(record: &SessionRecord) -> String {
         .as_deref()
         .map(json_string)
         .unwrap_or_else(|| "null".to_owned());
+    let blocker_owner = record
+        .blocker_owner
+        .as_deref()
+        .map(json_string)
+        .unwrap_or_else(|| "null".to_owned());
     let agent_command = record
         .agent_command
         .as_deref()
@@ -147,11 +174,12 @@ fn serialize(record: &SessionRecord) -> String {
         .agent_exit_code
         .map_or_else(|| "null".to_owned(), |code| code.to_string());
     format!(
-        "{{\n  \"issue_number\": {},\n  \"state\": {},\n  \"branch\": {},\n  \"blocker\": {},\n  \"agent_command\": {},\n  \"agent_exit_code\": {},\n  \"require_push_confirmation\": {},\n  \"require_pr_confirmation\": {}\n}}\n",
+        "{{\n  \"issue_number\": {},\n  \"state\": {},\n  \"branch\": {},\n  \"blocker\": {},\n  \"blocker_owner\": {},\n  \"agent_command\": {},\n  \"agent_exit_code\": {},\n  \"require_push_confirmation\": {},\n  \"require_pr_confirmation\": {}\n}}\n",
         record.issue_number,
         json_string(record.state.as_str()),
         json_string(&record.branch),
         blocker,
+        blocker_owner,
         agent_command,
         agent_exit_code,
         record.require_push_confirmation,
@@ -170,6 +198,10 @@ fn deserialize(source: &str) -> Result<SessionRecord, SessionError> {
     let blocker_value = value(source, "blocker")?;
     let blocker = (blocker_value != "null")
         .then(|| unquote(blocker_value))
+        .transpose()?;
+    let blocker_owner = optional_value(source, "blocker_owner")?
+        .filter(|value| *value != "null")
+        .map(unquote)
         .transpose()?;
     let agent_command = optional_value(source, "agent_command")?
         .filter(|value| *value != "null")
@@ -196,6 +228,7 @@ fn deserialize(source: &str) -> Result<SessionRecord, SessionError> {
         state,
         branch,
         blocker,
+        blocker_owner,
         agent_command,
         agent_exit_code,
         require_push_confirmation,

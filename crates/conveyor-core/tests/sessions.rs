@@ -54,3 +54,20 @@ fn lists_sessions_in_issue_number_order() {
     );
     fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn records_a_blocker_owner_and_a_deliberate_resume_state() {
+    let mut record = SessionRecord::new(70, IssueState::InProgress, "feat/70");
+
+    record
+        .block("waiting for API access", "platform-team")
+        .unwrap();
+    assert_eq!(record.state, IssueState::Blocked);
+    assert_eq!(record.blocker.as_deref(), Some("waiting for API access"));
+    assert_eq!(record.blocker_owner.as_deref(), Some("platform-team"));
+
+    record.resume(IssueState::InProgress).unwrap();
+    assert_eq!(record.state, IssueState::InProgress);
+    assert_eq!(record.blocker, None);
+    assert_eq!(record.blocker_owner, None);
+}

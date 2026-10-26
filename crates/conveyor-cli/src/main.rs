@@ -53,6 +53,8 @@ where
         "doctor" => doctor(directory),
         "issue" => issue(&arguments[1..], directory),
         "status" => status(&arguments[1..], directory),
+        "block" => block(&arguments[1..], directory),
+        "resume" => resume(&arguments[1..], directory),
         "verify" => verify_command(&arguments[1..], directory),
         "handoff" => handoff(&arguments[1..], directory),
         "build" => build(&arguments[1..], directory),
@@ -843,8 +845,65 @@ fn status(arguments: &[String], directory: &Path) -> Result<String, String> {
     }
 }
 
+fn block(arguments: &[String], directory: &Path) -> Result<String, String> {
+    let [number, reason_flag, reason, owner_flag, owner] = arguments else {
+        return Err("Usage: conveyor block <number> --reason <text> --owner <name>".to_owned());
+    };
+    if reason_flag != "--reason"
+        || owner_flag != "--owner"
+        || reason.trim().is_empty()
+        || owner.trim().is_empty()
+    {
+        return Err("Usage: conveyor block <number> --reason <text> --owner <name>".to_owned());
+    }
+    let issue_number = parse_issue_number(number)?;
+    let store = SessionStore::new(directory);
+    let mut session = load_session(&store, issue_number)?;
+    session
+        .block(reason, owner)
+        .map_err(|error| format!("could not block issue #{issue_number}: {error}"))?;
+    store.save(&session).map_err(|error| error.to_string())?;
+    record_audit(
+        directory,
+        issue_number,
+        "record_blocker",
+        format!("{reason} (owner: {owner})"),
+    )?;
+    Ok(format!("issue #{issue_number} is blocked; owner: {owner}"))
+}
+
+fn resume(arguments: &[String], directory: &Path) -> Result<String, String> {
+    let [number, to_flag, target] = arguments else {
+        return Err("Usage: conveyor resume <number> --to <state>".to_owned());
+    };
+    if to_flag != "--to" {
+        return Err("Usage: conveyor resume <number> --to <state>".to_owned());
+    }
+    let issue_number = parse_issue_number(number)?;
+    let target = IssueState::parse(target).ok_or("resume target must be a known workflow state")?;
+    let store = SessionStore::new(directory);
+    let mut session = load_session(&store, issue_number)?;
+    session
+        .resume(target)
+        .map_err(|error| format!("could not resume issue #{issue_number}: {error}"))?;
+    store.save(&session).map_err(|error| error.to_string())?;
+    record_audit(directory, issue_number, "resume_session", target.as_str())?;
+    Ok(format!(
+        "issue #{issue_number} resumed to {}",
+        target.as_str()
+    ))
+}
+
+fn load_session(store: &SessionStore, issue_number: u64) -> Result<SessionRecord, String> {
+    store
+        .load(issue_number)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("status: no local session for issue #{issue_number}"))
+}
+
 fn render_session(session: &SessionRecord, directory: &Path) -> String {
     let blocker = session.blocker.as_deref().unwrap_or("none");
+    let blocker_owner = session.blocker_owner.as_deref().unwrap_or("none");
     let current_branch = current_branch(directory).unwrap_or_else(|_| "unknown".to_owned());
     let required_checks = match read_latest_evidence(directory) {
         Ok(evidence) if evidence.verification.passes_required_checks() => "passed".to_owned(),
@@ -860,7 +919,7 @@ fn render_session(session: &SessionRecord, directory: &Path) -> String {
         (None, _) => "not run".to_owned(),
     };
     format!(
-        "issue #{}\nstate: {}\nbranch: {}\ncurrent branch: {}\nrequired checks: {}\nagent: {}\nblocker: {}\nnext action: {}",
+        "issue #{}\nstate: {}\nbranch: {}\ncurrent branch: {}\nrequired checks: {}\nagent: {}\nblocker: {}\nblocker owner: {}\nnext action: {}",
         session.issue_number,
         session.state.as_str(),
         session.branch,
@@ -868,6 +927,7 @@ fn render_session(session: &SessionRecord, directory: &Path) -> String {
         required_checks,
         agent,
         blocker,
+        blocker_owner,
         next_action(session.state)
     )
 }
@@ -1084,7 +1144,7 @@ fn initialize(arguments: &[String], directory: &Path) -> Result<String, String> 
 }
 
 fn usage() -> &'static str {
-    "Usage:\n  conveyor init --repository <owner/repository> [--target-branch <branch>]\n  conveyor doctor\n  conveyor status [issue]\n  conveyor issue validate <number> [--format human|json]\n  conveyor handoff <number> --role <planner|implementer|reviewer>\n  conveyor build <number> [--agent <name>] [--yes]\n  conveyor verify [--format human|json]\n  conveyor review <number> [--agent <name>]\n  conveyor pr open <number> [--waive-by <name>] [--yes]\n  conveyor audit <number>"
+    "Usage:\n  conveyor init --repository <owner/repository> [--target-branch <branch>]\n  conveyor doctor\n  conveyor status [issue]\n  conveyor block <number> --reason <text> --owner <name>\n  conveyor resume <number> --to <state>\n  conveyor issue validate <number> [--format human|json]\n  conveyor handoff <number> --role <planner|implementer|reviewer>\n  conveyor build <number> [--agent <name>] [--yes]\n  conveyor verify [--format human|json]\n  conveyor review <number> [--agent <name>]\n  conveyor pr open <number> [--waive-by <name>] [--yes]\n  conveyor audit <number>"
 }
 
 #[cfg(test)]
@@ -1153,6 +1213,39 @@ mod tests {
             .unwrap(),
             ("70", Some("local-reviewer"))
         );
+    }
+
+    #[test]
+    fn block_and_resume_update_a_local_session_with_an_owner() {
+        let directory = temporary_directory("block-resume");
+        let store = SessionStore::new(&directory);
+        store
+            .save(&SessionRecord::new(70, IssueState::InProgress, "feat/70"))
+            .unwrap();
+
+        let blocked = run(
+            [
+                "block",
+                "70",
+                "--reason",
+                "waiting for access",
+                "--owner",
+                "platform",
+            ],
+            &directory,
+        )
+        .unwrap();
+        assert!(blocked.contains("owner: platform"));
+        let status = run(["status", "70"], &directory).unwrap();
+        assert!(status.contains("state: blocked"));
+        assert!(status.contains("blocker owner: platform"));
+
+        run(["resume", "70", "--to", "in-progress"], &directory).unwrap();
+        assert_eq!(
+            store.load(70).unwrap().unwrap().state,
+            IssueState::InProgress
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
