@@ -83,7 +83,7 @@ impl TaskPacket {
                 .join("\n")
         };
         format!(
-            "# Conveyor task packet: issue #{}\n\nRole: {}\n\nBranch: `{}`\n\nCommit convention: `{}`\n\n## Repository guidance\n\n{}\n\n## Problem\n\n{}\n\n## In scope\n\n{}\n\n## Out of scope\n\n{}\n\n## Acceptance criteria\n\n{}\n\n## Affected components\n\n{}\n\n## Verification plan\n\n{}\n\n## Dependencies and risks\n\n{}\n\n## Open questions\n\n{}\n\n## Required checks\n\n{}\n",
+            "# Conveyor task packet: issue #{}\n\nRole: {}\n\nBranch: `{}`\n\nCommit convention: `{}`\n\n## Authority boundary\n\nImplement the scoped change and report results. Do not push, open or merge pull requests, deploy, or change GitHub issue state; Conveyor and the operator retain those actions.\n\n## Repository guidance\n\n{}\n\n## Problem\n\n{}\n\n## In scope\n\n{}\n\n## Out of scope\n\n{}\n\n## Acceptance criteria\n\n{}\n\n## Affected components\n\n{}\n\n## Verification plan\n\n{}\n\n## Dependencies and risks\n\n{}\n\n## Open questions\n\n{}\n\n## Required checks\n\n{}\n",
             self.issue_number,
             self.role.as_str(),
             self.branch,
