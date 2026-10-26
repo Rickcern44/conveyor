@@ -71,3 +71,16 @@ fn records_a_blocker_owner_and_a_deliberate_resume_state() {
     assert_eq!(record.blocker, None);
     assert_eq!(record.blocker_owner, None);
 }
+
+#[test]
+fn round_trips_a_multiline_blocker_reason() {
+    let directory = temporary_directory("multiline-blocker");
+    let store = SessionStore::new(&directory);
+    let mut record = SessionRecord::new(70, IssueState::InProgress, "feat/70");
+    record.block("waiting\nfor API access", "platform").unwrap();
+
+    store.save(&record).unwrap();
+
+    assert_eq!(store.load(70).unwrap(), Some(record));
+    fs::remove_dir_all(directory).unwrap();
+}

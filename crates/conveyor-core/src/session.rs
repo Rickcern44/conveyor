@@ -286,13 +286,67 @@ fn optional_value<'a>(source: &'a str, key: &str) -> Result<Option<&'a str>, Ses
 }
 
 fn json_string(value: &str) -> String {
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('\"', "\\\""))
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '\\' => escaped.push_str("\\\\"),
+            '\"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            character if character.is_control() => {
+                use std::fmt::Write;
+                write!(escaped, "\\u{:04x}", character as u32)
+                    .expect("writing to a String cannot fail");
+            }
+            character => escaped.push(character),
+        }
+    }
+    format!("\"{escaped}\"")
 }
 
 fn unquote(value: &str) -> Result<String, SessionError> {
-    value
+    let value = value
         .strip_prefix('\"')
         .and_then(|value| value.strip_suffix('\"'))
-        .map(|value| value.replace("\\\"", "\"").replace("\\\\", "\\"))
-        .ok_or_else(|| SessionError::InvalidRecord(format!("expected JSON string: {value}")))
+        .ok_or_else(|| SessionError::InvalidRecord(format!("expected JSON string: {value}")))?;
+    let mut decoded = String::with_capacity(value.len());
+    let mut characters = value.chars();
+    while let Some(character) = characters.next() {
+        if character != '\\' {
+            decoded.push(character);
+            continue;
+        }
+        let escaped = characters
+            .next()
+            .ok_or_else(|| SessionError::InvalidRecord("unterminated JSON escape".to_owned()))?;
+        match escaped {
+            '\\' => decoded.push('\\'),
+            '\"' => decoded.push('\"'),
+            'n' => decoded.push('\n'),
+            'r' => decoded.push('\r'),
+            't' => decoded.push('\t'),
+            'u' => {
+                let digits = characters.by_ref().take(4).collect::<String>();
+                if digits.len() != 4 {
+                    return Err(SessionError::InvalidRecord(
+                        "incomplete Unicode JSON escape".to_owned(),
+                    ));
+                }
+                let code = u32::from_str_radix(&digits, 16).map_err(|_| {
+                    SessionError::InvalidRecord("invalid Unicode JSON escape".to_owned())
+                })?;
+                let decoded_character = char::from_u32(code).ok_or_else(|| {
+                    SessionError::InvalidRecord("invalid Unicode JSON scalar".to_owned())
+                })?;
+                decoded.push(decoded_character);
+            }
+            other => {
+                return Err(SessionError::InvalidRecord(format!(
+                    "unknown JSON escape: \\{other}"
+                )));
+            }
+        }
+    }
+    Ok(decoded)
 }
