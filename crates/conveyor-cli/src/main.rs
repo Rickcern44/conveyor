@@ -993,6 +993,9 @@ fn render_session(session: &SessionRecord, directory: &Path) -> String {
     let current_branch = current_branch(directory).unwrap_or_else(|_| "unknown".to_owned());
     let required_checks =
         match load_config(directory).and_then(|config| read_evidence(directory, &config)) {
+            Ok(evidence) if !evidence.is_for_revision(&current_revision(directory)) => {
+                "stale; run verify".to_owned()
+            }
             Ok(evidence) if evidence.verification.passes_required_checks() => "passed".to_owned(),
             Ok(evidence) if evidence.waiver_by.is_some() => {
                 format!("waived by {}", evidence.waiver_by.unwrap_or_default())
@@ -1382,6 +1385,31 @@ mod tests {
         assert!(output.contains("required checks: not run"));
         assert!(output.contains("agent: not run"));
         assert!(output.contains("next action: run verification and prepare review"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn status_marks_evidence_from_another_revision_as_stale() {
+        let directory = temporary_directory("status-stale-evidence");
+        fs::write(
+            directory.join(".conveyor.toml"),
+            Config::new("octo-org/conveyor", "main").to_toml().unwrap(),
+        )
+        .unwrap();
+        let store = SessionStore::new(&directory);
+        store
+            .save(&SessionRecord::new(70, IssueState::InProgress, "feat/70"))
+            .unwrap();
+        fs::create_dir_all(directory.join(".conveyor/reports")).unwrap();
+        fs::write(
+            directory.join(".conveyor/reports/latest.json"),
+            "{\"revision\":\"old\",\"waiver_by\":null,\"passed_required_checks\":true,\"checks\":[]}",
+        )
+        .unwrap();
+
+        let output = run(["status", "70"], &directory).unwrap();
+
+        assert!(output.contains("required checks: stale; run verify"));
         fs::remove_dir_all(directory).unwrap();
     }
 
