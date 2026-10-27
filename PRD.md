@@ -126,17 +126,26 @@ The configuration is committed to each consumer repository. Secrets, access toke
 3. create a conventional branch;
 4. transition the issue to `in-progress`;
 5. start the selected implementer adapter with a bounded task packet;
-6. retain command, tool, and outcome metadata in a local session record.
+6. retain command, tool, and outcome metadata in a local session record;
+7. after a clean implementation, push the branch and create a draft PR.
 
-The default is **no push and no PR creation**. `--open-draft-pr` is an explicit operator action and can be disabled by policy.
+The default is draft-PR delivery after a clean implementation. Push and PR
+creation remain explicit, confirmed operator actions; `--yes` is the
+non-interactive equivalent, not a policy bypass. Local verification and agent
+review are not prerequisites for this initial draft so CI can be the primary
+verification gate.
 
 ### 8.4 Verification
 
-`conveyor verify` runs configured checks and emits both human-readable output and structured JSON. The report records commands, exit status, duration, revision, and whether results were skipped or waived.
+`conveyor verify` remains an optional local check. It emits both human-readable
+output and structured JSON, recording commands, exit status, duration,
+revision, and whether results were skipped or waived. When the current branch
+has a draft PR, Conveyor posts the human-readable report as a PR comment after
+operator confirmation; `--yes` accepts that confirmation for automation.
 
 ### 8.5 Review and PR preparation
 
-`conveyor review 70` packages the issue contract, diff summary, and verification report for a reviewer adapter or human reviewer. `conveyor pr open 70` creates a **draft** PR only after configured checks pass or a named operator records a waiver. It attaches a generated delivery summary to the PR body.
+`conveyor review 70` packages the issue contract, diff summary, and verification report for a reviewer adapter or human reviewer. `conveyor pr open 70` remains a manual, review-gated delivery path: it creates a **draft** PR only after configured checks pass or a named operator records a waiver, and attaches a generated delivery summary to the PR body. The normal `build` path creates the initial draft earlier.
 
 ### 8.6 Status
 
@@ -164,8 +173,8 @@ conveyor doctor
 conveyor status [issue]
 conveyor issue validate <number>
 conveyor handoff <number> --role <planner|implementer|reviewer>
-conveyor build <number> [--agent <name>] [--open-draft-pr]
-conveyor verify [--format human|json]
+conveyor build <number> [--agent <name>] [--dry-run|--yes]
+conveyor verify [--format human|json] [--yes]
 conveyor review <number> [--agent <name>]
 conveyor pr open <number>
 ```
@@ -228,7 +237,7 @@ Likely initial libraries: `clap`, `serde`, `toml`, `thiserror`, `tokio`, and a G
 
 - A prepared issue can be validated and handed to an agent without manual copy/paste of requirements.
 - An operator can determine why an issue is blocked and what action is permitted from one status command.
-- A draft PR contains traceable links to its issue contract and verification evidence.
+- A draft PR has a traceable issue link, and optional local verification evidence is visible in a PR comment.
 - Adding a second repository requires configuration, not a fork of Conveyor.
 - A user can change the planner, implementer, or reviewer runtime without rewriting workflow policy.
 

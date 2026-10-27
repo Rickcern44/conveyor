@@ -70,32 +70,38 @@ Add `--dry-run` to perform every preflight check and display the proposed
 branch, label transition, and adapter without changing Git, GitHub, local
 session files, packets, or agent state.
 
-`--open-draft-pr` is an explicit delivery request. After the implementer
-finishes, Conveyor requires a clean worktree, runs configured verification,
-prepares review, then pushes and opens a draft PR. A failed check stops before
-delivery and requires the normal named-waiver path.
+After the implementer finishes with a clean worktree, `build` pushes the branch
+and opens a draft PR by default. The build confirmation includes those delivery
+actions; use `--yes` for deliberate non-interactive automation. Local
+verification and AI review are no longer prerequisites for the initial draft,
+so CI can be the primary verification gate.
 
 ```sh
 conveyor build 70
 conveyor build 70 --dry-run
-conveyor build 70 --open-draft-pr --yes
+conveyor build 70 --yes
 conveyor build retry 70 --yes
 conveyor status 70
 conveyor block 70 --reason "Waiting for API access" --owner platform-team
 conveyor resume 70 --to in-progress
-conveyor verify
+conveyor verify --yes
 conveyor review 70
 conveyor pr open 70
 conveyor audit 70
 ```
 
-`verify` writes structured evidence to `.conveyor/reports/latest.json` by
-default; configure `verification_report_path` to use another repository-local
-path.
+`verify` is an optional local check. It writes structured evidence to
+`.conveyor/reports/latest.json` by default; configure
+`verification_report_path` to use another repository-local path. When the
+current delivery branch already has a PR, it also posts the human-readable
+report as a PR comment after confirmation (`--yes` accepts that confirmation
+for automation). If no PR exists, verification still completes and records
+local evidence.
 `review` creates a review packet and optionally runs the configured reviewer.
-`pr open` requires passing required checks (or `--waive-by <operator>`), shows
-the push and draft-PR plan, and requests consent unless `--yes` is supplied.
-It never creates a non-draft PR. `audit` prints the JSONL record of completed
+`pr open` remains available for a deliberate, review-gated draft-PR delivery:
+it requires passing required checks (or `--waive-by <operator>`), shows the
+push and draft-PR plan, and requests consent unless `--yes` is supplied. It
+never creates a non-draft PR. `audit` prints the JSONL record of completed
 branch, issue, agent, push, and PR actions for the issue.
 Named verification waivers are retained in the structured evidence and audit
 trail as well as in the draft PR body.
