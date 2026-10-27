@@ -48,6 +48,11 @@ pub struct ValidationReport {
     pub missing: Vec<Requirement>,
 }
 
+/// Renders the canonical Markdown skeleton for a Conveyor-ready issue.
+pub fn template() -> &'static str {
+    "## Problem\nDescribe the user or business problem.\n\n## In scope\n- Describe the behavior to deliver.\n\n## Out of scope\n- Describe intentionally excluded work.\n\n## Acceptance criteria\n- [ ] Describe an observable outcome.\n\n## Affected components\n- Identify components, or state a discovery task.\n\n## Verification plan\n- Describe the checks that prove this works.\n\n## Dependencies and risks\n- List dependencies, risks, or `None`.\n\n## Open questions\n- List unresolved decisions, or `None`.\n"
+}
+
 /// Extracts the standard Conveyor issue-template sections from Markdown.
 ///
 /// Unknown headings are ignored, allowing repositories to add their own issue

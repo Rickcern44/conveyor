@@ -17,6 +17,8 @@ pub struct SessionRecord {
     pub blocker_owner: Option<String>,
     pub agent_command: Option<String>,
     pub agent_exit_code: Option<i32>,
+    pub acp_agent: Option<String>,
+    pub acp_session_id: Option<String>,
     pub require_push_confirmation: bool,
     pub require_pr_confirmation: bool,
 }
@@ -31,6 +33,8 @@ impl SessionRecord {
             blocker_owner: None,
             agent_command: None,
             agent_exit_code: None,
+            acp_agent: None,
+            acp_session_id: None,
             require_push_confirmation: true,
             require_pr_confirmation: true,
         }
@@ -40,6 +44,12 @@ impl SessionRecord {
     pub fn record_agent_outcome(&mut self, command: impl Into<String>, exit_code: Option<i32>) {
         self.agent_command = Some(command.into());
         self.agent_exit_code = exit_code;
+    }
+
+    /// Retains an ACP provider session identifier for a later continuation.
+    pub fn record_acp_session(&mut self, agent: impl Into<String>, session_id: impl Into<String>) {
+        self.acp_agent = Some(agent.into());
+        self.acp_session_id = Some(session_id.into());
     }
 
     /// Snapshots delivery consent policy when the work session begins.
@@ -173,8 +183,18 @@ fn serialize(record: &SessionRecord) -> String {
     let agent_exit_code = record
         .agent_exit_code
         .map_or_else(|| "null".to_owned(), |code| code.to_string());
+    let acp_agent = record
+        .acp_agent
+        .as_deref()
+        .map(json_string)
+        .unwrap_or_else(|| "null".to_owned());
+    let acp_session_id = record
+        .acp_session_id
+        .as_deref()
+        .map(json_string)
+        .unwrap_or_else(|| "null".to_owned());
     format!(
-        "{{\n  \"issue_number\": {},\n  \"state\": {},\n  \"branch\": {},\n  \"blocker\": {},\n  \"blocker_owner\": {},\n  \"agent_command\": {},\n  \"agent_exit_code\": {},\n  \"require_push_confirmation\": {},\n  \"require_pr_confirmation\": {}\n}}\n",
+        "{{\n  \"issue_number\": {},\n  \"state\": {},\n  \"branch\": {},\n  \"blocker\": {},\n  \"blocker_owner\": {},\n  \"agent_command\": {},\n  \"agent_exit_code\": {},\n  \"acp_agent\": {},\n  \"acp_session_id\": {},\n  \"require_push_confirmation\": {},\n  \"require_pr_confirmation\": {}\n}}\n",
         record.issue_number,
         json_string(record.state.as_str()),
         json_string(&record.branch),
@@ -182,6 +202,8 @@ fn serialize(record: &SessionRecord) -> String {
         blocker_owner,
         agent_command,
         agent_exit_code,
+        acp_agent,
+        acp_session_id,
         record.require_push_confirmation,
         record.require_pr_confirmation
     )
@@ -215,6 +237,14 @@ fn deserialize(source: &str) -> Result<SessionRecord, SessionError> {
             })
         })
         .transpose()?;
+    let acp_agent = optional_value(source, "acp_agent")?
+        .filter(|value| *value != "null")
+        .map(unquote)
+        .transpose()?;
+    let acp_session_id = optional_value(source, "acp_session_id")?
+        .filter(|value| *value != "null")
+        .map(unquote)
+        .transpose()?;
     let require_push_confirmation = optional_value(source, "require_push_confirmation")?
         .map(parse_bool)
         .transpose()?
@@ -231,6 +261,8 @@ fn deserialize(source: &str) -> Result<SessionRecord, SessionError> {
         blocker_owner,
         agent_command,
         agent_exit_code,
+        acp_agent,
+        acp_session_id,
         require_push_confirmation,
         require_pr_confirmation,
     })

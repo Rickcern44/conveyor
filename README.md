@@ -38,10 +38,32 @@ conveyor issue validate 70
 conveyor issue validate 70 --format json
 ```
 
+## Creating and adapting issues
+
+Create a local issue body in the required format, complete its placeholders,
+then create a GitHub issue only after Conveyor confirms it is ready:
+
+```sh
+conveyor issue scaffold docs/issues/oauth-login.md
+# edit docs/issues/oauth-login.md
+conveyor issue create --title "Add OAuth login" --body-file docs/issues/oauth-login.md
+```
+
+For an existing issue that predates Conveyor, use the configured planner agent
+to produce a validated proposal. This only writes a local draft by default;
+review it before deliberately replacing the GitHub issue body:
+
+```sh
+conveyor issue adapt 70
+conveyor issue adapt 70 --apply
+```
+
+Use `--yes` with `create` or `adapt --apply` only for deliberate automation.
+
 `conveyor build 70` lists its branch, label, session, and agent actions before
 asking for operator confirmation (or accepting explicit `--yes` for
 automation). It creates the configured conventional branch, moves the issue
-from `ready-for-build` to `in-progress`, writes a local session and task
+from `conveyor:ready` to `conveyor:in-progress`, writes a local session and task
 packet, then runs the configured implementer.
 
 Add `--dry-run` to perform every preflight check and display the proposed
@@ -82,8 +104,8 @@ requires an explicit next workflow state, clears that blocker, and records the
 decision in the audit trail; it does not rerun an agent automatically.
 
 Use `--agent <name>` on `build` or `review` to select another configured
-`[[agent_commands]]` adapter for that one invocation. The configured role
-default remains in effect when the option is omitted.
+`[[acp_agents]]` or `[[agent_commands]]` adapter for that one invocation. The
+configured role default remains in effect when the option is omitted.
 
 The default branch convention is `feat/{issue}-build`. Configure a repository
 specific pattern in `.conveyor.toml`; it must include `{issue}` and contain no
@@ -96,6 +118,12 @@ branch_pattern = "work/{issue}/implementation"
 commit_message_pattern = "feat: issue #{issue}"
 pr_template_path = ".github/pull_request_template.md" # optional
 verification_report_path = ".conveyor/reports/latest.json"
+
+[workflow]
+# These are the defaults. Override them when this repository uses different labels.
+ready_label = "conveyor:ready"
+in_progress_label = "conveyor:in-progress"
+blocked_label = "conveyor:blocked"
 ```
 
 ## Direct local agent adapter
@@ -117,3 +145,52 @@ args = ["--packet", "{packet_path}"]
 Supported placeholders are `{packet_path}`, `{repo_root}`, `{issue_number}`,
 `{branch}`, and `{role}`. The packet instructs the agent not to perform Git or
 GitHub delivery actions; Conveyor retains that authority.
+
+## ACP agent integration
+
+For a first-class Agent Client Protocol (ACP) connection, build or install
+Conveyor with the optional feature:
+
+```sh
+cargo install --path crates/conveyor-cli --features acp --bin conveyor
+```
+
+Then use `codex` or `claude` as an agent role. Conveyor includes zero-install
+presets that launch the corresponding ACP adapter with `npx`; no
+`[[acp_agents]]` block is required for those two names. Conveyor starts the
+process over stdio, initializes ACP v1, opens a session rooted at the
+repository, and sends the task or review packet as the prompt. The agent may
+edit the worktree, while Conveyor remains responsible for branches, issue
+labels, verification, pushes, and draft PRs.
+
+```toml
+[agents]
+implementer = "codex-acp"
+reviewer = "codex-acp"
+
+[[acp_agents]]
+name = "codex-acp"
+program = "npx"
+args = ["-y", "@agentclientprotocol/codex-acp@latest"]
+```
+
+The explicit configuration above remains useful to pin an adapter version or
+use a different program. With the built-in preset, use this instead:
+
+```toml
+[agents]
+implementer = "codex"
+reviewer = "claude"
+```
+
+Conveyor records the ACP session ID in `.conveyor/sessions/<issue>.json`. Send
+a follow-up to the same agent conversation with:
+
+```sh
+conveyor agent continue 70 "Address the reviewer feedback, then run the checks."
+```
+
+Run `conveyor doctor` after configuring this: it checks the configured process
+executable (`npx` in this example). If an ACP agent is configured in a binary
+without ACP support, Conveyor stops with the exact reinstall command rather
+than falling back to a direct command adapter.

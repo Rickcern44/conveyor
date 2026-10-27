@@ -1,4 +1,6 @@
-use conveyor_core::issue_contract::{IssueContract, Requirement, from_markdown, validate};
+use conveyor_core::issue_contract::{
+    IssueContract, Requirement, from_markdown, template, validate,
+};
 
 fn complete_contract() -> IssueContract {
     IssueContract {
@@ -72,4 +74,9 @@ None.
     assert!(validate(&contract).is_valid());
     assert_eq!(contract.problem, "Operators need an auditable workflow.");
     assert_eq!(contract.affected_components, "conveyor-core");
+}
+
+#[test]
+fn template_contains_a_complete_contract() {
+    assert!(validate(&from_markdown(template())).is_valid());
 }

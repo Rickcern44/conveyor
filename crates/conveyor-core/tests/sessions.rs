@@ -19,6 +19,7 @@ fn saves_and_loads_an_inspectable_session_record() {
     let store = SessionStore::new(&directory);
     let mut record = SessionRecord::new(70, IssueState::InProgress, "feat/70-validate-issues");
     record.record_agent_outcome("fixture-agent --packet packet.md", Some(0));
+    record.record_acp_session("codex", "acp-session-123");
     record.set_delivery_confirmation_policy(true, false);
 
     store.save(&record).unwrap();
@@ -26,6 +27,7 @@ fn saves_and_loads_an_inspectable_session_record() {
     let saved = fs::read_to_string(directory.join(".conveyor/sessions/70.json")).unwrap();
     assert!(saved.contains("\"issue_number\": 70"));
     assert!(saved.contains("\"agent_exit_code\": 0"));
+    assert!(saved.contains("\"acp_session_id\": \"acp-session-123\""));
     assert!(saved.contains("\"require_push_confirmation\": true"));
     assert!(saved.contains("\"require_pr_confirmation\": false"));
     assert_eq!(store.load(70).unwrap(), Some(record));

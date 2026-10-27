@@ -11,6 +11,7 @@ pub struct Config {
     pub agents: AgentConfig,
     pub checks: Vec<Check>,
     pub agent_commands: Vec<AgentCommand>,
+    pub acp_agents: Vec<AcpAgentCommand>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -55,6 +56,14 @@ pub struct Check {
 /// A named, repository-approved direct CLI adapter template.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AgentCommand {
+    pub name: String,
+    pub program: String,
+    pub args: Vec<String>,
+}
+
+/// A named ACP agent process launched by Conveyor over stdio.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AcpAgentCommand {
     pub name: String,
     pub program: String,
     pub args: Vec<String>,
@@ -110,9 +119,9 @@ impl Config {
                 repository: repository.into(),
             },
             workflow: WorkflowConfig {
-                ready_label: "ready-for-build".to_owned(),
-                in_progress_label: "in-progress".to_owned(),
-                blocked_label: "blocked".to_owned(),
+                ready_label: "conveyor:ready".to_owned(),
+                in_progress_label: "conveyor:in-progress".to_owned(),
+                blocked_label: "conveyor:blocked".to_owned(),
                 draft_prs_only: true,
                 require_confirmation_for: vec![
                     ConfirmationAction::Push,
@@ -128,6 +137,7 @@ impl Config {
             },
             checks: Vec::new(),
             agent_commands: Vec::new(),
+            acp_agents: Vec::new(),
         }
     }
 
@@ -136,6 +146,23 @@ impl Config {
         self.agent_commands
             .iter()
             .find(|command| command.name == name)
+    }
+
+    /// Resolves an ACP process selected by an agent role, including built-in
+    /// Codex and Claude provider presets.
+    pub fn acp_agent(&self, name: &str) -> Option<AcpAgentCommand> {
+        self.acp_agents
+            .iter()
+            .find(|agent| agent.name == name)
+            .cloned()
+            .or_else(|| AcpAgentCommand::preset(name))
+    }
+
+    /// Resolves the executable for either supported agent transport.
+    pub fn agent_program(&self, name: &str) -> Option<String> {
+        self.acp_agent(name)
+            .map(|agent| agent.program)
+            .or_else(|| self.agent_command(name).map(|agent| agent.program.clone()))
     }
 
     /// Whether this repository requires an explicit operator confirmation for
@@ -212,6 +239,24 @@ impl Config {
                 )
             })
             .collect::<String>();
+        let acp_agents = self
+            .acp_agents
+            .iter()
+            .map(|agent| {
+                let args = agent
+                    .args
+                    .iter()
+                    .map(|argument| quote(argument))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "\n[[acp_agents]]\nname = {}\nprogram = {}\nargs = [{}]\n",
+                    quote(&agent.name),
+                    quote(&agent.program),
+                    args
+                )
+            })
+            .collect::<String>();
         let pr_template_path = self
             .conveyor
             .pr_template_path
@@ -219,7 +264,7 @@ impl Config {
             .map(|path| format!("pr_template_path = {}\n", quote(path)))
             .unwrap_or_default();
         Ok(format!(
-            "[conveyor]\nversion = {}\nremote = {}\ntarget_branch = {}\nbranch_pattern = {}\ncommit_message_pattern = {}\nverification_report_path = {}\n{}\n[github]\nrepository = {}\n\n[workflow]\nready_label = {}\nin_progress_label = {}\nblocked_label = {}\ndraft_prs_only = {}\nrequire_confirmation_for = [{}]\n\n[agents]\nplanner = {}\nimplementer = {}\nreviewer = {}\n{}{}",
+            "[conveyor]\nversion = {}\nremote = {}\ntarget_branch = {}\nbranch_pattern = {}\ncommit_message_pattern = {}\nverification_report_path = {}\n{}\n[github]\nrepository = {}\n\n[workflow]\nready_label = {}\nin_progress_label = {}\nblocked_label = {}\ndraft_prs_only = {}\nrequire_confirmation_for = [{}]\n\n[agents]\nplanner = {}\nimplementer = {}\nreviewer = {}\n{}{}{}",
             self.conveyor.version,
             quote(&self.conveyor.remote),
             quote(&self.conveyor.target_branch),
@@ -238,6 +283,7 @@ impl Config {
             quote(&self.agents.reviewer),
             checks,
             agent_commands,
+            acp_agents,
         ))
     }
 
@@ -247,6 +293,7 @@ impl Config {
         let mut values = std::collections::BTreeMap::new();
         let mut check_values = Vec::<std::collections::BTreeMap<String, String>>::new();
         let mut agent_command_values = Vec::<std::collections::BTreeMap<String, String>>::new();
+        let mut acp_agent_values = Vec::<std::collections::BTreeMap<String, String>>::new();
         for raw_line in source.lines() {
             let line = raw_line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -260,6 +307,11 @@ impl Config {
             if line == "[[agent_commands]]" {
                 section = "agent_commands";
                 agent_command_values.push(std::collections::BTreeMap::new());
+                continue;
+            }
+            if line == "[[acp_agents]]" {
+                section = "acp_agents";
+                acp_agent_values.push(std::collections::BTreeMap::new());
                 continue;
             }
             if line.starts_with('[') && line.ends_with(']') {
@@ -280,6 +332,11 @@ impl Config {
                 agent_command_values
                     .last_mut()
                     .expect("agent_commands section has an entry")
+                    .insert(key.trim().to_owned(), value.trim().to_owned());
+            } else if section == "acp_agents" {
+                acp_agent_values
+                    .last_mut()
+                    .expect("acp_agents section has an entry")
                     .insert(key.trim().to_owned(), value.trim().to_owned());
             } else {
                 values.insert(format!("{section}.{}", key.trim()), value.trim().to_owned());
@@ -341,7 +398,7 @@ impl Config {
                     .get("workflow.in_progress_label")
                     .map(|value| parse_string(value))
                     .transpose()?
-                    .unwrap_or_else(|| "in-progress".to_owned()),
+                    .unwrap_or_else(|| "conveyor:in-progress".to_owned()),
                 blocked_label: parse_string(required(&values, "workflow.blocked_label")?)?,
                 draft_prs_only: parse_bool(required(&values, "workflow.draft_prs_only")?)?,
                 require_confirmation_for: actions,
@@ -359,6 +416,26 @@ impl Config {
                 .iter()
                 .map(parse_agent_command)
                 .collect::<Result<Vec<_>, _>>()?,
+            acp_agents: acp_agent_values
+                .iter()
+                .map(parse_acp_agent)
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+}
+
+impl AcpAgentCommand {
+    /// Returns a maintained zero-install ACP adapter for a built-in provider.
+    pub fn preset(name: &str) -> Option<Self> {
+        let package = match name {
+            "codex" => "@agentclientprotocol/codex-acp",
+            "claude" => "@agentclientprotocol/claude-agent-acp",
+            _ => return None,
+        };
+        Some(Self {
+            name: name.to_owned(),
+            program: "npx".to_owned(),
+            args: vec!["-y".to_owned(), package.to_owned()],
         })
     }
 }
@@ -479,6 +556,16 @@ fn parse_agent_command(
     values: &std::collections::BTreeMap<String, String>,
 ) -> Result<AgentCommand, ConfigError> {
     Ok(AgentCommand {
+        name: parse_string(check_required(values, "name")?)?,
+        program: parse_string(check_required(values, "program")?)?,
+        args: parse_array(check_required(values, "args")?)?,
+    })
+}
+
+fn parse_acp_agent(
+    values: &std::collections::BTreeMap<String, String>,
+) -> Result<AcpAgentCommand, ConfigError> {
+    Ok(AcpAgentCommand {
         name: parse_string(check_required(values, "name")?)?,
         program: parse_string(check_required(values, "program")?)?,
         args: parse_array(check_required(values, "args")?)?,

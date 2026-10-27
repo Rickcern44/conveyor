@@ -7,11 +7,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use conveyor_core::agent_adapter::{CommandTemplate, TemplateContext};
 use conveyor_core::audit::{AuditEvent, AuditLog};
 use conveyor_core::build_plan::{BuildInput, prepare};
+#[cfg(feature = "acp")]
+use conveyor_core::config::AcpAgentCommand;
 use conveyor_core::config::{Config, ConfirmationAction};
 use conveyor_core::confirmation::{ConfirmationPrompt, Decision, authorize};
 use conveyor_core::doctor::{Doctor, FindingKind, Probe, ProbeResult};
 use conveyor_core::evidence::EvidenceReport;
-use conveyor_core::issue_contract::{from_markdown, validate};
+use conveyor_core::issue_contract::{from_markdown, template as issue_template, validate};
 use conveyor_core::pr_gate::{PrDecision, decide, delivery_summary};
 use conveyor_core::review_packet::ReviewPacket;
 use conveyor_core::session::{SessionRecord, SessionStore};
@@ -20,6 +22,82 @@ use conveyor_core::verification::{
     CommandResult, CommandRunner, Outcome, VerificationReport, verify,
 };
 use conveyor_core::workflow::IssueState;
+
+#[cfg(feature = "acp")]
+struct AcpRunOutcome {
+    session_id: String,
+    response: String,
+}
+
+#[cfg(feature = "acp")]
+fn run_acp_agent(
+    agent_command: &AcpAgentCommand,
+    prompt: &str,
+    directory: &Path,
+    existing_session_id: Option<&str>,
+) -> Result<AcpRunOutcome, String> {
+    use agent_client_protocol::schema::{ProtocolVersion, v1::InitializeRequest};
+    use agent_client_protocol::{AcpAgent, Client};
+
+    let command = std::iter::once(agent_command.program.clone())
+        .chain(agent_command.args.iter().cloned())
+        .collect::<Vec<_>>();
+    let agent = AcpAgent::from_args(command).map_err(|error| {
+        format!(
+            "could not configure ACP agent `{}`: {error}",
+            agent_command.name
+        )
+    })?;
+    let action = if existing_session_id.is_some() {
+        "resuming"
+    } else {
+        "starting"
+    };
+    eprintln!("conveyor: {action} ACP agent `{}`...", agent_command.name);
+    let result = futures::executor::block_on(Client.builder().name("conveyor").connect_with(
+        agent,
+        async |connection| {
+            connection
+                .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                .block_task()
+                .await?;
+            if let Some(session_id) = existing_session_id {
+                let mut session = connection
+                    .resume_session(session_id.to_owned(), directory)
+                    .block_task()
+                    .start_session()
+                    .await?
+                    .into_session();
+                let session_id = session.session_id().to_string();
+                session.send_prompt(prompt)?;
+                let response = session.read_to_string().await?;
+                Ok(AcpRunOutcome {
+                    session_id,
+                    response,
+                })
+            } else {
+                connection
+                    .build_session(directory)
+                    .block_task()
+                    .run_until(async |mut session| {
+                        let session_id = session.session_id().to_string();
+                        session.send_prompt(prompt)?;
+                        let response = session.read_to_string().await?;
+                        Ok(AcpRunOutcome {
+                            session_id,
+                            response,
+                        })
+                    })
+                    .await
+            }
+        },
+    ))
+    .map_err(|error| format!("ACP agent `{}` failed: {error}", agent_command.name));
+    if result.is_ok() {
+        eprintln!("conveyor: ACP agent `{}` completed", agent_command.name);
+    }
+    result
+}
 
 fn main() {
     let arguments = std::env::args().skip(1);
@@ -34,6 +112,13 @@ fn main() {
 
 fn current_directory() -> std::path::PathBuf {
     std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+}
+
+#[cfg(not(feature = "acp"))]
+fn acp_feature_required(agent_name: &str) -> String {
+    format!(
+        "agent `{agent_name}` is configured in [[acp_agents]]; rebuild Conveyor with ACP support: `cargo install --path crates/conveyor-cli --features acp --bin conveyor`"
+    )
 }
 
 fn run<I, S>(arguments: I, directory: &Path) -> Result<String, String>
@@ -55,6 +140,7 @@ where
         "status" => status(&arguments[1..], directory),
         "block" => block(&arguments[1..], directory),
         "resume" => resume(&arguments[1..], directory),
+        "agent" => agent(&arguments[1..], directory),
         "verify" => verify_command(&arguments[1..], directory),
         "handoff" => handoff(&arguments[1..], directory),
         "build" => build(&arguments[1..], directory),
@@ -248,6 +334,22 @@ fn review(arguments: &[String], directory: &Path) -> Result<String, String> {
         mark_session_in_review(directory, issue_number)?;
     }
     let agent_name = requested_agent.unwrap_or(&configuration.agents.reviewer);
+    if let Some(agent) = configuration.acp_agent(agent_name) {
+        #[cfg(feature = "acp")]
+        {
+            let _outcome = run_acp_agent(&agent, &packet.to_markdown(), directory, None)?;
+            record_audit(directory, issue_number, "run_acp_reviewer", &agent.program)?;
+            return Ok(format!(
+                "created review packet: {}; ACP reviewer completed",
+                path.display()
+            ));
+        }
+        #[cfg(not(feature = "acp"))]
+        {
+            let _ = agent;
+            return Err(acp_feature_required(agent_name));
+        }
+    }
     let Some(command) = configuration.agent_command(agent_name) else {
         return Ok(format!("created review packet: {}", path.display()));
     };
@@ -407,21 +509,28 @@ fn build(arguments: &[String], directory: &Path) -> Result<String, String> {
         ));
     }
     let agent_name = requested_agent.unwrap_or(&configuration.agents.implementer);
-    let command = configuration
-        .agent_command(agent_name)
-        .ok_or_else(|| {
-            format!(
-                "no [[agent_commands]] entry named `{agent_name}` is configured for the implementer"
-            )
-        })?
-        .clone();
+    let acp_agent = configuration.acp_agent(agent_name);
+    #[cfg(not(feature = "acp"))]
+    if acp_agent.is_some() {
+        return Err(acp_feature_required(agent_name));
+    }
+    let command = configuration.agent_command(agent_name).cloned();
+    let agent_program = acp_agent
+        .as_ref()
+        .map(|agent| agent.program.as_str())
+        .or_else(|| command.as_ref().map(|agent| agent.program.as_str()))
+        .ok_or_else(|| format!(
+            "no [[acp_agents]] or [[agent_commands]] entry named `{agent_name}` is configured for the implementer"
+        ))?
+        .to_owned();
+    let uses_acp = acp_agent.is_some();
     if dry_run {
         return Ok(format!(
             "build dry run for issue #{issue_number}\nbranch: {}\nGitHub label transition: {} -> {}\nagent command: {}\nno Git, GitHub, session, packet, or agent action was performed",
             plan.branch,
             configuration.workflow.ready_label,
             configuration.workflow.in_progress_label,
-            command.program
+            agent_program
         ));
     }
     let delivery_plan = if open_draft_pr {
@@ -434,7 +543,7 @@ fn build(arguments: &[String], directory: &Path) -> Result<String, String> {
         plan.branch,
         configuration.workflow.ready_label,
         configuration.workflow.in_progress_label,
-        command.program
+        agent_program
     );
     if authorize(explicit_yes, &TerminalPrompt, &summary) == Decision::Declined {
         return Err("build cancelled; no Git or GitHub changes were made".to_owned());
@@ -500,49 +609,79 @@ fn build(arguments: &[String], directory: &Path) -> Result<String, String> {
         configuration.checks.clone(),
     );
     let packet_path = write_packet(directory, &packet)?;
-    let invocation = CommandTemplate {
-        program: command.program,
-        args: command.args,
-    }
-    .expand(&TemplateContext {
-        packet_path: packet_path.display().to_string(),
-        repository_root: directory.display().to_string(),
-        issue_number,
-        branch: plan.branch.clone(),
-        role: AgentRole::Implementer.as_str().to_owned(),
-    })
-    .map_err(|error| format!("invalid implementer command template: {error}"))?;
-    let output = Command::new(&invocation.program)
-        .args(&invocation.args)
-        .current_dir(directory)
-        .output()
-        .map_err(|error| {
+    let (agent_invocation, agent_exit_code, agent_failure) = if let Some(agent) = &acp_agent {
+        #[cfg(feature = "acp")]
+        {
+            let invocation = format!("ACP {}", agent.program);
+            match run_acp_agent(agent, &packet.to_markdown(), directory, None) {
+                Ok(outcome) => {
+                    session.record_acp_session(&agent.name, outcome.session_id);
+                    (invocation, Some(0), None)
+                }
+                Err(error) => (invocation, None, Some(error)),
+            }
+        }
+        #[cfg(not(feature = "acp"))]
+        {
+            let _ = agent;
+            unreachable!("ACP agents are rejected before execution")
+        }
+    } else {
+        let command =
+            command.expect("a direct command is required when no ACP agent is configured");
+        let invocation = CommandTemplate {
+            program: command.program,
+            args: command.args,
+        }
+        .expand(&TemplateContext {
+            packet_path: packet_path.display().to_string(),
+            repository_root: directory.display().to_string(),
+            issue_number,
+            branch: plan.branch.clone(),
+            role: AgentRole::Implementer.as_str().to_owned(),
+        })
+        .map_err(|error| format!("invalid implementer command template: {error}"))?;
+        let output = Command::new(&invocation.program)
+            .args(&invocation.args)
+            .current_dir(directory)
+            .output()
+            .map_err(|error| {
+                format!(
+                    "could not start implementer `{}`: {error}",
+                    invocation.program
+                )
+            })?;
+        let failure = (!output.status.success()).then(|| {
             format!(
-                "could not start implementer `{}`: {error}",
-                invocation.program
+                "implementer exited unsuccessfully: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
             )
-        })?;
-    session.record_agent_outcome(
-        std::iter::once(invocation.program.as_str())
-            .chain(invocation.args.iter().map(String::as_str))
-            .collect::<Vec<_>>()
-            .join(" "),
-        output.status.code(),
-    );
+        });
+        (
+            std::iter::once(invocation.program.as_str())
+                .chain(invocation.args.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+                .join(" "),
+            output.status.code(),
+            failure,
+        )
+    };
+    session.record_agent_outcome(agent_invocation, agent_exit_code);
     store
         .save(&session)
         .map_err(|error| format!("agent ran, but its outcome could not be saved: {error}"))?;
     record_audit(
         directory,
         issue_number,
-        "run_implementer",
-        &invocation.program,
+        if uses_acp {
+            "run_acp_implementer"
+        } else {
+            "run_implementer"
+        },
+        &agent_program,
     )?;
-    if !output.status.success() {
-        return Err(format!(
-            "implementer exited unsuccessfully: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
+    if let Some(error) = agent_failure {
+        return Err(error);
     }
     if open_draft_pr {
         if !worktree_is_clean(directory)? {
@@ -969,6 +1108,47 @@ fn status(arguments: &[String], directory: &Path) -> Result<String, String> {
     }
 }
 
+fn agent(arguments: &[String], directory: &Path) -> Result<String, String> {
+    let [command, number, prompt @ ..] = arguments else {
+        return Err("Usage: conveyor agent continue <number> <prompt>".to_owned());
+    };
+    if command != "continue" || prompt.is_empty() {
+        return Err("Usage: conveyor agent continue <number> <prompt>".to_owned());
+    }
+    let issue_number = parse_issue_number(number)?;
+    let store = SessionStore::new(directory);
+    let session = load_session(&store, issue_number)?;
+    let agent_name = session
+        .acp_agent
+        .clone()
+        .ok_or_else(|| format!("issue #{issue_number} has no resumable ACP agent session"))?;
+    let session_id = session
+        .acp_session_id
+        .clone()
+        .ok_or_else(|| format!("issue #{issue_number} has no resumable ACP session identifier"))?;
+    let configuration = load_config(directory)?;
+    let agent = configuration
+        .acp_agent(&agent_name)
+        .ok_or_else(|| format!("ACP agent `{agent_name}` is no longer configured"))?;
+    #[cfg(feature = "acp")]
+    {
+        let mut session = session;
+        let outcome = run_acp_agent(&agent, &prompt.join(" "), directory, Some(&session_id))?;
+        session.record_acp_session(agent_name, outcome.session_id);
+        session.record_agent_outcome(format!("ACP {} (resumed)", agent.program), Some(0));
+        store.save(&session).map_err(|error| error.to_string())?;
+        record_audit(directory, issue_number, "resume_acp_agent", &agent.program)?;
+        Ok(format!(
+            "ACP agent session continued for issue #{issue_number}"
+        ))
+    }
+    #[cfg(not(feature = "acp"))]
+    {
+        let _ = (agent, session_id, session);
+        Err(acp_feature_required(&agent_name))
+    }
+}
+
 fn block(arguments: &[String], directory: &Path) -> Result<String, String> {
     let [number, reason_flag, reason, owner_flag, owner] = arguments else {
         return Err("Usage: conveyor block <number> --reason <text> --owner <name>".to_owned());
@@ -1066,14 +1246,19 @@ fn render_session(session: &SessionRecord, directory: &Path) -> String {
         (Some(command), None) => format!("{command} (exit: unavailable)"),
         (None, _) => "not run".to_owned(),
     };
+    let acp_session = match (&session.acp_agent, &session.acp_session_id) {
+        (Some(agent), Some(session_id)) => format!("{agent} ({session_id})"),
+        _ => "none".to_owned(),
+    };
     format!(
-        "issue #{}\nstate: {}\nbranch: {}\ncurrent branch: {}\nrequired checks: {}\nagent: {}\nblocker: {}\nblocker owner: {}\nnext action: {}",
+        "issue #{}\nstate: {}\nbranch: {}\ncurrent branch: {}\nrequired checks: {}\nagent: {}\nACP session: {}\nblocker: {}\nblocker owner: {}\nnext action: {}",
         session.issue_number,
         session.state.as_str(),
         session.branch,
         current_branch,
         required_checks,
         agent,
+        acp_session,
         blocker,
         blocker_owner,
         next_action(session.state)
@@ -1097,7 +1282,197 @@ fn issue(arguments: &[String], directory: &Path) -> Result<String, String> {
         [command, number, options @ ..] if command == "validate" => {
             validate_issue(number, options, directory)
         }
-        _ => Err("Usage: conveyor issue validate <number> [--format human|json]".to_owned()),
+        [command, path] if command == "scaffold" => scaffold_issue(path, directory),
+        [command, options @ ..] if command == "create" => create_issue(options, directory),
+        [command, number, options @ ..] if command == "adapt" => {
+            adapt_issue(number, options, directory)
+        }
+        _ => Err("Usage: conveyor issue <validate|scaffold|create|adapt> ...".to_owned()),
+    }
+}
+
+fn scaffold_issue(path: &str, directory: &Path) -> Result<String, String> {
+    let path = directory.join(path);
+    if path.exists() {
+        return Err(format!("refusing to overwrite {}", path.display()));
+    }
+    let parent = path.parent().ok_or("issue template path has no parent")?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
+    std::fs::write(&path, issue_template())
+        .map_err(|error| format!("could not write {}: {error}", path.display()))?;
+    Ok(format!(
+        "created Conveyor issue scaffold: {}",
+        path.display()
+    ))
+}
+
+fn create_issue(arguments: &[String], directory: &Path) -> Result<String, String> {
+    let mut title = None;
+    let mut body_file = None;
+    let mut explicit_yes = false;
+    let mut index = 0;
+    while index < arguments.len() {
+        match arguments[index].as_str() {
+            "--title" => {
+                title = arguments.get(index + 1).cloned();
+                index += 2;
+            }
+            "--body-file" => {
+                body_file = arguments.get(index + 1).cloned();
+                index += 2;
+            }
+            "--yes" => {
+                explicit_yes = true;
+                index += 1;
+            }
+            option => return Err(format!("unknown issue create option: {option}")),
+        }
+    }
+    let title = title
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("Usage: conveyor issue create --title <title> --body-file <path> [--yes]")?;
+    let body_file = body_file
+        .ok_or("Usage: conveyor issue create --title <title> --body-file <path> [--yes]")?;
+    let body_path = directory.join(&body_file);
+    let body = std::fs::read_to_string(&body_path)
+        .map_err(|error| format!("could not read {}: {error}", body_path.display()))?;
+    let report = validate(&from_markdown(&body));
+    if !report.is_valid() {
+        return Err(format!(
+            "issue body is not Conveyor-ready; missing:\n{}",
+            report
+                .missing
+                .iter()
+                .map(|item| format!("- {}", item.label()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+    }
+    let configuration = load_config(directory)?;
+    let summary = format!(
+        "Create GitHub issue in {}\nTitle: {title}\nBody: {}",
+        configuration.github.repository,
+        body_path.display()
+    );
+    if authorize(explicit_yes, &TerminalPrompt, &summary) == Decision::Declined {
+        return Err("issue creation cancelled; no GitHub issue was created".to_owned());
+    }
+    let output = Command::new("gh")
+        .args([
+            "issue",
+            "create",
+            "--repo",
+            &configuration.github.repository,
+            "--title",
+            &title,
+            "--body-file",
+            &body_file,
+        ])
+        .current_dir(directory)
+        .output()
+        .map_err(|error| format!("could not run gh: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "could not create issue: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(format!(
+        "created Conveyor-ready issue: {}",
+        String::from_utf8_lossy(&output.stdout).trim()
+    ))
+}
+
+fn adapt_issue(number: &str, arguments: &[String], directory: &Path) -> Result<String, String> {
+    let issue_number = parse_issue_number(number)?;
+    let (apply, explicit_yes) = match arguments {
+        [] => (false, false),
+        [flag] if flag == "--apply" => (true, false),
+        [flag] if flag == "--yes" => (false, true),
+        [apply, yes] if apply == "--apply" && yes == "--yes" => (true, true),
+        _ => return Err("Usage: conveyor issue adapt <number> [--apply] [--yes]".to_owned()),
+    };
+    let configuration = load_config(directory)?;
+    let source = fetch_issue_body(number, directory)?;
+    let agent_name = &configuration.agents.planner;
+    let agent = configuration
+        .acp_agent(agent_name)
+        .ok_or_else(|| format!("planner `{agent_name}` must be an ACP agent to adapt an issue"))?;
+    let prompt = format!(
+        "Rewrite the GitHub issue below as a complete Conveyor issue contract. Preserve factual intent; do not invent requirements. Return only Markdown using exactly this structure:\n\n{}\n\nExisting issue:\n{}",
+        issue_template(),
+        source
+    );
+    #[cfg(feature = "acp")]
+    let proposal = run_acp_agent(&agent, &prompt, directory, None)?.response;
+    #[cfg(not(feature = "acp"))]
+    {
+        let _ = (agent, prompt, issue_number, apply, explicit_yes);
+        Err(acp_feature_required(agent_name))
+    }
+    #[cfg(feature = "acp")]
+    {
+        let report = validate(&from_markdown(&proposal));
+        if !report.is_valid() {
+            return Err(format!(
+                "planner produced an incomplete adaptation; missing:\n{}",
+                report
+                    .missing
+                    .iter()
+                    .map(|item| format!("- {}", item.label()))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+        }
+        let proposals = directory.join(".conveyor/issues");
+        std::fs::create_dir_all(&proposals)
+            .map_err(|error| format!("could not create {}: {error}", proposals.display()))?;
+        let proposal_path = proposals.join(format!("{issue_number}-adapted.md"));
+        std::fs::write(&proposal_path, &proposal)
+            .map_err(|error| format!("could not write {}: {error}", proposal_path.display()))?;
+        if !apply {
+            return Ok(format!(
+                "created validated adaptation: {}\nReview it, then apply with `conveyor issue adapt {issue_number} --apply`",
+                proposal_path.display()
+            ));
+        }
+        let summary = format!(
+            "Replace GitHub issue #{issue_number} body with validated proposal {}",
+            proposal_path.display()
+        );
+        if authorize(explicit_yes, &TerminalPrompt, &summary) == Decision::Declined {
+            return Ok(format!(
+                "created validated adaptation: {}; GitHub issue was not changed",
+                proposal_path.display()
+            ));
+        }
+        run_command(
+            "gh",
+            [
+                "issue",
+                "edit",
+                number,
+                "--repo",
+                &configuration.github.repository,
+                "--body-file",
+                proposal_path
+                    .to_str()
+                    .ok_or("proposal path is not valid UTF-8")?,
+            ],
+            directory,
+            "could not update adapted issue",
+        )?;
+        record_audit(
+            directory,
+            issue_number,
+            "adapt_issue",
+            proposal_path.display().to_string(),
+        )?;
+        Ok(format!(
+            "updated issue #{issue_number} from {}",
+            proposal_path.display()
+        ))
     }
 }
 
@@ -1204,6 +1579,7 @@ fn finding_name(kind: FindingKind) -> &'static str {
         FindingKind::GitRepository => "git repository",
         FindingKind::GitRemote => "git remote",
         FindingKind::GithubAuthentication => "github authentication",
+        FindingKind::WorkflowLabel => "workflow label",
         FindingKind::AgentExecutable => "agent executable",
     }
 }
@@ -1237,6 +1613,36 @@ impl Probe for SystemProbe<'_> {
             || ProbeResult::Missing("run `gh auth login` to authenticate".to_owned()),
             |_| ProbeResult::Available,
         )
+    }
+
+    fn github_label(&self, repository: &str, label: &str) -> ProbeResult {
+        let output = Command::new("gh")
+            .args([
+                "label", "list", "--repo", repository, "--limit", "1000", "--json", "name", "--jq",
+                ".[].name",
+            ])
+            .current_dir(self.directory)
+            .output();
+        match output {
+            Ok(output)
+                if output.status.success()
+                    && String::from_utf8_lossy(&output.stdout)
+                        .lines()
+                        .any(|name| name == label) =>
+            {
+                ProbeResult::Available
+            }
+            Ok(output) if output.status.success() => ProbeResult::Missing(format!(
+                "configured label `{label}` does not exist in {repository}"
+            )),
+            Ok(output) => ProbeResult::Missing(format!(
+                "could not list labels in {repository}: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )),
+            Err(error) => ProbeResult::Missing(format!(
+                "could not run gh to inspect labels in {repository}: {error}"
+            )),
+        }
     }
 
     fn executable(&self, name: &str) -> ProbeResult {
@@ -1311,7 +1717,7 @@ fn initialize(arguments: &[String], directory: &Path) -> Result<String, String> 
 }
 
 fn usage() -> &'static str {
-    "Usage:\n  conveyor init --repository <owner/repository> [--target-branch <branch>]\n  conveyor doctor\n  conveyor status [issue]\n  conveyor block <number> --reason <text> --owner <name>\n  conveyor resume <number> --to <state>\n  conveyor issue validate <number> [--format human|json]\n  conveyor handoff <number> --role <planner|implementer|reviewer>\n  conveyor build <number> [--agent <name>] [--open-draft-pr] [--dry-run|--yes]\n  conveyor verify [--format human|json]\n  conveyor review <number> [--agent <name>]\n  conveyor pr open <number> [--waive-by <name>] [--yes]\n  conveyor audit <number>"
+    "Usage:\n  conveyor init --repository <owner/repository> [--target-branch <branch>]\n  conveyor doctor\n  conveyor status [issue]\n  conveyor block <number> --reason <text> --owner <name>\n  conveyor resume <number> --to <state>\n  conveyor agent continue <number> <prompt>\n  conveyor issue scaffold <path>\n  conveyor issue create --title <title> --body-file <path> [--yes]\n  conveyor issue adapt <number> [--apply] [--yes]\n  conveyor issue validate <number> [--format human|json]\n  conveyor handoff <number> --role <planner|implementer|reviewer>\n  conveyor build <number> [--agent <name>] [--open-draft-pr] [--dry-run|--yes]\n  conveyor verify [--format human|json]\n  conveyor review <number> [--agent <name>]\n  conveyor pr open <number> [--waive-by <name>] [--yes]\n  conveyor audit <number>"
 }
 
 #[cfg(test)]
@@ -1352,6 +1758,23 @@ mod tests {
         assert!(configuration.contains("repository = \"octo-org/conveyor\""));
         assert!(configuration.contains("target_branch = \"trunk\""));
         assert!(configuration.contains("draft_prs_only = true"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn issue_scaffold_writes_a_valid_contract_template() {
+        let directory = temporary_directory("issue-scaffold");
+
+        let output = run(["issue", "scaffold", "docs/issues/example.md"], &directory).unwrap();
+        let path = directory.join("docs/issues/example.md");
+
+        assert!(output.contains("created Conveyor issue scaffold"));
+        assert!(path.is_file());
+        assert!(
+            fs::read_to_string(path)
+                .unwrap()
+                .contains("## Acceptance criteria")
+        );
         fs::remove_dir_all(directory).unwrap();
     }
 

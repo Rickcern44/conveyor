@@ -64,7 +64,7 @@ if [ "$1" = "issue" ] && [ "$2" = "view" ]; then
     printf '%s\n' "$*" >> "$CONVEYOR_GH_LOG"
   fi
   case "$*" in
-    *labels*) printf 'ready-for-build\n' ;;
+    *labels*) printf 'conveyor:ready\n' ;;
     *) cat <<'ISSUE'
 ## Problem
 Build safely.
@@ -206,7 +206,7 @@ exit 1
     assert!(
         fs::read_to_string(&gh_log)
             .unwrap()
-            .contains("--add-label in-progress")
+            .contains("--add-label conveyor:in-progress")
     );
     assert!(
         fs::read_to_string(&gh_log)

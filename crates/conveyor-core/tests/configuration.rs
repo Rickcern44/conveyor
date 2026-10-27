@@ -1,11 +1,13 @@
-use conveyor_core::config::{AgentCommand, Check, Config, ConfirmationAction};
+use conveyor_core::config::{AcpAgentCommand, AgentCommand, Check, Config, ConfirmationAction};
 
 #[test]
 fn default_configuration_has_safe_delivery_policy() {
     let config = Config::new("octo-org/conveyor", "main");
 
     assert!(config.workflow.draft_prs_only);
-    assert_eq!(config.workflow.in_progress_label, "in-progress");
+    assert_eq!(config.workflow.ready_label, "conveyor:ready");
+    assert_eq!(config.workflow.in_progress_label, "conveyor:in-progress");
+    assert_eq!(config.workflow.blocked_label, "conveyor:blocked");
     assert_eq!(config.conveyor.branch_pattern, "feat/{issue}-build");
     assert_eq!(config.conveyor.remote, "origin");
     assert_eq!(
@@ -58,6 +60,45 @@ fn configuration_round_trips_a_custom_verification_report_path() {
         Config::from_toml(&config.to_toml().unwrap()).unwrap(),
         config
     );
+}
+
+#[test]
+fn configuration_round_trips_an_acp_agent_process() {
+    let mut config = Config::new("octo-org/conveyor", "main");
+    config.acp_agents.push(AcpAgentCommand {
+        name: "codex-acp".to_owned(),
+        program: "npx".to_owned(),
+        args: vec![
+            "-y".to_owned(),
+            "@agentclientprotocol/codex-acp@latest".to_owned(),
+        ],
+    });
+
+    assert_eq!(
+        Config::from_toml(&config.to_toml().unwrap()).unwrap(),
+        config
+    );
+    assert_eq!(config.acp_agent("codex-acp").unwrap().program, "npx");
+}
+
+#[test]
+fn built_in_acp_presets_require_only_the_provider_name() {
+    assert_eq!(
+        AcpAgentCommand::preset("codex").unwrap().args,
+        vec!["-y", "@agentclientprotocol/codex-acp"]
+    );
+    assert_eq!(
+        AcpAgentCommand::preset("claude").unwrap().args,
+        vec!["-y", "@agentclientprotocol/claude-agent-acp"]
+    );
+}
+
+#[test]
+fn default_roles_resolve_to_acp_provider_presets() {
+    let config = Config::new("octo-org/conveyor", "main");
+
+    assert_eq!(config.agent_program("codex").as_deref(), Some("npx"));
+    assert_eq!(config.agent_program("claude").as_deref(), Some("npx"));
 }
 
 #[test]
@@ -127,13 +168,13 @@ fn older_configuration_without_in_progress_label_uses_the_safe_default() {
     let source = Config::new("octo-org/conveyor", "main")
         .to_toml()
         .unwrap()
-        .replace("in_progress_label = \"in-progress\"\n", "");
+        .replace("in_progress_label = \"conveyor:in-progress\"\n", "");
 
     assert_eq!(
         Config::from_toml(&source)
             .unwrap()
             .workflow
             .in_progress_label,
-        "in-progress"
+        "conveyor:in-progress"
     );
 }

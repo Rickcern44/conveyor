@@ -14,6 +14,7 @@ pub trait Probe {
     fn git_repository(&self) -> ProbeResult;
     fn git_remote(&self, name: &str) -> ProbeResult;
     fn github_authentication(&self) -> ProbeResult;
+    fn github_label(&self, repository: &str, label: &str) -> ProbeResult;
     fn executable(&self, name: &str) -> ProbeResult;
 }
 
@@ -45,27 +46,33 @@ impl<'a, P: Probe> Doctor<'a, P> {
             FindingKind::GithubAuthentication,
             self.probe.github_authentication(),
         );
+        for label in [
+            &configuration.workflow.ready_label,
+            &configuration.workflow.in_progress_label,
+            &configuration.workflow.blocked_label,
+        ] {
+            collect(
+                &mut findings,
+                FindingKind::WorkflowLabel,
+                self.probe
+                    .github_label(&configuration.github.repository, label),
+            );
+        }
         for executable in [
             configuration
-                .agent_command(&configuration.agents.planner)
-                .map_or(configuration.agents.planner.as_str(), |command| {
-                    command.program.as_str()
-                }),
+                .agent_program(&configuration.agents.planner)
+                .unwrap_or_else(|| configuration.agents.planner.clone()),
             configuration
-                .agent_command(&configuration.agents.implementer)
-                .map_or(configuration.agents.implementer.as_str(), |command| {
-                    command.program.as_str()
-                }),
+                .agent_program(&configuration.agents.implementer)
+                .unwrap_or_else(|| configuration.agents.implementer.clone()),
             configuration
-                .agent_command(&configuration.agents.reviewer)
-                .map_or(configuration.agents.reviewer.as_str(), |command| {
-                    command.program.as_str()
-                }),
+                .agent_program(&configuration.agents.reviewer)
+                .unwrap_or_else(|| configuration.agents.reviewer.clone()),
         ] {
             collect(
                 &mut findings,
                 FindingKind::AgentExecutable,
-                self.probe.executable(executable),
+                self.probe.executable(&executable),
             );
         }
         DoctorReport { findings }
@@ -103,5 +110,6 @@ pub enum FindingKind {
     GitRepository,
     GitRemote,
     GithubAuthentication,
+    WorkflowLabel,
     AgentExecutable,
 }
