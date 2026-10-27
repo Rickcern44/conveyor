@@ -1,3 +1,4 @@
+// Legacy workflow handlers, isolated behind the typed CLI boundary.
 use std::fs::OpenOptions;
 #[cfg(feature = "acp")]
 use std::io::IsTerminal;
@@ -254,21 +255,6 @@ fn run_acp_agent(
     })
 }
 
-fn main() {
-    let arguments = std::env::args().skip(1);
-    match run(arguments, &current_directory()) {
-        Ok(message) => println!("{message}"),
-        Err(error) => {
-            eprintln!("conveyor: {error}");
-            std::process::exit(1);
-        }
-    }
-}
-
-fn current_directory() -> std::path::PathBuf {
-    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-}
-
 #[cfg(not(feature = "acp"))]
 fn acp_feature_required(agent_name: &str) -> String {
     format!(
@@ -276,7 +262,7 @@ fn acp_feature_required(agent_name: &str) -> String {
     )
 }
 
-fn run<I, S>(arguments: I, directory: &Path) -> Result<String, String>
+pub(crate) fn run<I, S>(arguments: I, directory: &Path) -> Result<String, String>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
