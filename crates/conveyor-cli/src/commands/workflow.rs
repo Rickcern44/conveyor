@@ -1,5 +1,4 @@
-// Legacy workflow handlers, isolated behind the typed CLI boundary.
-use std::fs::OpenOptions;
+//! Shared workflow command handlers pending further command-group extraction.
 #[cfg(feature = "acp")]
 use std::io::IsTerminal;
 use std::io::{self, Write};
@@ -7,16 +6,13 @@ use std::path::Path;
 use std::process::Command;
 #[cfg(feature = "acp")]
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use conveyor_core::agent_adapter::{CommandTemplate, TemplateContext};
-use conveyor_core::audit::{AuditEvent, AuditLog};
 use conveyor_core::build_plan::{BuildInput, prepare};
 #[cfg(feature = "acp")]
 use conveyor_core::config::AcpAgentCommand;
 use conveyor_core::config::{Config, ConfirmationAction};
 use conveyor_core::confirmation::{ConfirmationPrompt, Decision, authorize};
-use conveyor_core::doctor::{Doctor, FindingKind, Probe, ProbeResult};
 use conveyor_core::evidence::EvidenceReport;
 use conveyor_core::issue_contract::{from_markdown, template as issue_template, validate};
 use conveyor_core::pr_gate::{PrDecision, decide, delivery_summary};
@@ -276,7 +272,7 @@ where
     };
     match command {
         "init" => initialize(&arguments[1..], directory),
-        "doctor" => doctor(directory),
+        "doctor" => crate::commands::setup::doctor(directory),
         "issue" => issue(&arguments[1..], directory),
         "status" => status(&arguments[1..], directory),
         "block" => block(&arguments[1..], directory),
@@ -1390,7 +1386,7 @@ fn write_evidence(
         .map_err(|error| format!("could not save {}: {error}", path.display()))
 }
 
-fn load_config(directory: &Path) -> Result<Config, String> {
+pub(crate) fn load_config(directory: &Path) -> Result<Config, String> {
     let path = directory.join(".conveyor.toml");
     let source = std::fs::read_to_string(&path)
         .map_err(|error| format!("could not read {}: {error}", path.display()))?;
@@ -1451,60 +1447,22 @@ fn audit(arguments: &[String], directory: &Path) -> Result<String, String> {
         return Err("Usage: conveyor audit <number>".to_owned());
     };
     let issue_number = parse_issue_number(number)?;
-    let path = directory.join(format!(".conveyor/audit/{issue_number}.jsonl"));
-    std::fs::read_to_string(&path).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
-            format!("audit: no local events for issue #{issue_number}")
-        } else {
-            format!("could not read {}: {error}", path.display())
-        }
-    })
+    crate::commands::audit::read(issue_number, directory)
 }
 
-fn record_audit(
+pub(crate) fn record_audit(
     directory: &Path,
     issue_number: u64,
     action: &str,
     target: impl Into<String>,
 ) -> Result<(), String> {
-    let timestamp_unix_seconds = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| format!("could not record audit timestamp: {error}"))?
-        .as_secs();
-    let actor = std::env::var("USER")
-        .or_else(|_| std::env::var("USERNAME"))
-        .unwrap_or_else(|_| "local-operator".to_owned());
-    AuditLog::new(directory)
-        .append(
-            issue_number,
-            &AuditEvent::new(action, target, actor, timestamp_unix_seconds),
-        )
-        .map_err(|error| format!("action completed but audit recording failed: {error}"))
+    crate::commands::audit::record(directory, issue_number, action, target)
 }
 
 fn status(arguments: &[String], directory: &Path) -> Result<String, String> {
-    let store = SessionStore::new(directory);
     match arguments {
-        [] => {
-            let sessions = store.list().map_err(|error| error.to_string())?;
-            if sessions.is_empty() {
-                Ok("status: no active local sessions".to_owned())
-            } else {
-                Ok(sessions
-                    .iter()
-                    .map(|session| render_session(session, directory))
-                    .collect::<Vec<_>>()
-                    .join("\n\n"))
-            }
-        }
-        [issue] => {
-            let issue_number = parse_issue_number(issue)?;
-            let session = store
-                .load(issue_number)
-                .map_err(|error| error.to_string())?
-                .ok_or_else(|| format!("status: no local session for issue #{issue_number}"))?;
-            Ok(render_session(&session, directory))
-        }
+        [] => crate::commands::sessions::status(None, directory),
+        [issue] => crate::commands::sessions::status(Some(parse_issue_number(issue)?), directory),
         _ => Err("Usage: conveyor status [issue]".to_owned()),
     }
 }
@@ -1561,20 +1519,7 @@ fn block(arguments: &[String], directory: &Path) -> Result<String, String> {
     {
         return Err("Usage: conveyor block <number> --reason <text> --owner <name>".to_owned());
     }
-    let issue_number = parse_issue_number(number)?;
-    let store = SessionStore::new(directory);
-    let mut session = load_session(&store, issue_number)?;
-    session
-        .block(reason, owner)
-        .map_err(|error| format!("could not block issue #{issue_number}: {error}"))?;
-    store.save(&session).map_err(|error| error.to_string())?;
-    record_audit(
-        directory,
-        issue_number,
-        "record_blocker",
-        format!("{reason} (owner: {owner})"),
-    )?;
-    Ok(format!("issue #{issue_number} is blocked; owner: {owner}"))
+    crate::commands::sessions::block(parse_issue_number(number)?, reason, owner, directory)
 }
 
 fn resume(arguments: &[String], directory: &Path) -> Result<String, String> {
@@ -1584,19 +1529,7 @@ fn resume(arguments: &[String], directory: &Path) -> Result<String, String> {
     if to_flag != "--to" {
         return Err("Usage: conveyor resume <number> --to <state>".to_owned());
     }
-    let issue_number = parse_issue_number(number)?;
-    let target = IssueState::parse(target).ok_or("resume target must be a known workflow state")?;
-    let store = SessionStore::new(directory);
-    let mut session = load_session(&store, issue_number)?;
-    session
-        .resume(target)
-        .map_err(|error| format!("could not resume issue #{issue_number}: {error}"))?;
-    store.save(&session).map_err(|error| error.to_string())?;
-    record_audit(directory, issue_number, "resume_session", target.as_str())?;
-    Ok(format!(
-        "issue #{issue_number} resumed to {}",
-        target.as_str()
-    ))
+    crate::commands::sessions::resume(parse_issue_number(number)?, target, directory)
 }
 
 fn load_session(store: &SessionStore, issue_number: u64) -> Result<SessionRecord, String> {
@@ -1626,7 +1559,7 @@ fn mark_session_in_review(directory: &Path, issue_number: u64) -> Result<(), Str
     }
 }
 
-fn render_session(session: &SessionRecord, directory: &Path) -> String {
+pub(crate) fn render_session(session: &SessionRecord, directory: &Path) -> String {
     let blocker = session.blocker.as_deref().unwrap_or("none");
     let blocker_owner = session.blocker_owner.as_deref().unwrap_or("none");
     let current_branch = current_branch(directory).unwrap_or_else(|_| "unknown".to_owned());
@@ -1986,126 +1919,6 @@ fn parse_verify_arguments(options: &[String]) -> Result<(ReportFormat, bool), St
     Ok((format, explicit_yes))
 }
 
-fn doctor(directory: &Path) -> Result<String, String> {
-    let configuration = load_config(directory)?;
-    let report = Doctor::new(&SystemProbe { directory }).check(&configuration);
-    if report.is_healthy() {
-        return Ok("doctor: all checks passed".to_owned());
-    }
-    let findings = report
-        .findings
-        .iter()
-        .map(|finding| format!("{}: {}", finding_name(finding.kind), finding.detail))
-        .collect::<Vec<_>>()
-        .join("\n");
-    Ok(format!(
-        "doctor: {} issue(s) found\n{findings}",
-        report.findings.len()
-    ))
-}
-
-fn finding_name(kind: FindingKind) -> &'static str {
-    match kind {
-        FindingKind::GitRepository => "git repository",
-        FindingKind::GitRemote => "git remote",
-        FindingKind::GithubAuthentication => "github authentication",
-        FindingKind::WorkflowLabel => "workflow label",
-        FindingKind::AgentExecutable => "agent executable",
-    }
-}
-
-struct SystemProbe<'a> {
-    directory: &'a Path,
-}
-
-impl Probe for SystemProbe<'_> {
-    fn git_repository(&self) -> ProbeResult {
-        command_succeeds(
-            "git",
-            ["rev-parse", "--is-inside-work-tree"],
-            Some(self.directory),
-        )
-        .map_or_else(
-            || ProbeResult::Missing("not inside a Git worktree".to_owned()),
-            |_| ProbeResult::Available,
-        )
-    }
-
-    fn git_remote(&self, name: &str) -> ProbeResult {
-        command_succeeds("git", ["remote", "get-url", name], Some(self.directory)).map_or_else(
-            || ProbeResult::Missing(format!("configured remote `{name}` does not exist")),
-            |_| ProbeResult::Available,
-        )
-    }
-
-    fn github_authentication(&self) -> ProbeResult {
-        command_succeeds("gh", ["auth", "status"], Some(self.directory)).map_or_else(
-            || ProbeResult::Missing("run `gh auth login` to authenticate".to_owned()),
-            |_| ProbeResult::Available,
-        )
-    }
-
-    fn github_label(&self, repository: &str, label: &str) -> ProbeResult {
-        let output = Command::new("gh")
-            .args([
-                "label", "list", "--repo", repository, "--limit", "1000", "--json", "name", "--jq",
-                ".[].name",
-            ])
-            .current_dir(self.directory)
-            .output();
-        match output {
-            Ok(output)
-                if output.status.success()
-                    && String::from_utf8_lossy(&output.stdout)
-                        .lines()
-                        .any(|name| name == label) =>
-            {
-                ProbeResult::Available
-            }
-            Ok(output) if output.status.success() => ProbeResult::Missing(format!(
-                "configured label `{label}` does not exist in {repository}"
-            )),
-            Ok(output) => ProbeResult::Missing(format!(
-                "could not list labels in {repository}: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )),
-            Err(error) => ProbeResult::Missing(format!(
-                "could not run gh to inspect labels in {repository}: {error}"
-            )),
-        }
-    }
-
-    fn executable(&self, name: &str) -> ProbeResult {
-        if executable_on_path(name) {
-            ProbeResult::Available
-        } else {
-            ProbeResult::Missing(format!("{name} is not on PATH"))
-        }
-    }
-}
-
-fn command_succeeds<const N: usize>(
-    program: &str,
-    arguments: [&str; N],
-    directory: Option<&Path>,
-) -> Option<()> {
-    let mut command = Command::new(program);
-    command
-        .args(arguments)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    if let Some(directory) = directory {
-        command.current_dir(directory);
-    }
-    command.status().ok()?.success().then_some(())
-}
-
-fn executable_on_path(name: &str) -> bool {
-    std::env::var_os("PATH").is_some_and(|paths| {
-        std::env::split_paths(&paths).any(|directory| directory.join(name).is_file())
-    })
-}
-
 fn initialize(arguments: &[String], directory: &Path) -> Result<String, String> {
     let mut repository = None;
     let mut target_branch = "main".to_owned();
@@ -2122,28 +1935,7 @@ fn initialize(arguments: &[String], directory: &Path) -> Result<String, String> 
         index += 2;
     }
     let repository = repository.ok_or("init requires --repository <owner/repository>")?;
-    let path = directory.join(".conveyor.toml");
-    let content = Config::new(repository, target_branch)
-        .to_toml()
-        .map_err(|error| error.to_string())?;
-    let mut output = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-        .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::AlreadyExists {
-                format!(
-                    "{} already exists; refusing to overwrite it",
-                    path.display()
-                )
-            } else {
-                format!("could not create {}: {error}", path.display())
-            }
-        })?;
-    output
-        .write_all(content.as_bytes())
-        .map_err(|error| format!("could not write {}: {error}", path.display()))?;
-    Ok(format!("created {}", path.display()))
+    crate::commands::setup::initialize(&repository, &target_branch, directory)
 }
 
 fn usage() -> &'static str {

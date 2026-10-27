@@ -1,11 +1,24 @@
 //! Parsed command dispatch.
 
+pub(crate) mod audit;
+pub(crate) mod sessions;
+pub(crate) mod setup;
+pub(crate) mod workflow;
+
 use std::path::Path;
 
 use crate::cli::{AgentCommand, Cli, Commands, Format, IssueCommand, PrCommand};
 
 pub(crate) fn execute(cli: Cli, directory: &Path) -> Result<String, String> {
-    crate::legacy::run(arguments(cli.command), directory)
+    match cli.command {
+        Commands::Init(args) => setup::initialize(&args.repository, &args.target_branch, directory),
+        Commands::Doctor => setup::doctor(directory),
+        Commands::Status(args) => sessions::status(args.issue, directory),
+        Commands::Block(args) => sessions::block(args.number, &args.reason, &args.owner, directory),
+        Commands::Resume(args) => sessions::resume(args.number, &args.to, directory),
+        Commands::Audit(args) => audit::read(args.number, directory),
+        command => workflow::run(arguments(command), directory),
+    }
 }
 
 fn format(format: Format) -> &'static str {
@@ -17,31 +30,13 @@ fn format(format: Format) -> &'static str {
 
 fn arguments(command: Commands) -> Vec<String> {
     match command {
-        Commands::Init(args) => vec![
-            "init".into(),
-            "--repository".into(),
-            args.repository,
-            "--target-branch".into(),
-            args.target_branch,
-        ],
-        Commands::Doctor => vec!["doctor".into()],
-        Commands::Status(args) => std::iter::once("status".into())
-            .chain(args.issue.map(|issue| issue.to_string()))
-            .collect(),
-        Commands::Block(args) => vec![
-            "block".into(),
-            args.number.to_string(),
-            "--reason".into(),
-            args.reason,
-            "--owner".into(),
-            args.owner,
-        ],
-        Commands::Resume(args) => vec![
-            "resume".into(),
-            args.number.to_string(),
-            "--to".into(),
-            args.to,
-        ],
+        Commands::Init(_) | Commands::Doctor => {
+            unreachable!("setup commands are dispatched directly")
+        }
+        Commands::Status(_) | Commands::Block(_) | Commands::Resume(_) => {
+            unreachable!("session commands are dispatched directly")
+        }
+        Commands::Audit(_) => unreachable!("audit commands are dispatched directly"),
         Commands::Agent(args) => match args.command {
             AgentCommand::Continue { number, prompt } => std::iter::once("agent".into())
                 .chain(["continue".into(), number.to_string()])
@@ -89,7 +84,6 @@ fn arguments(command: Commands) -> Vec<String> {
                 .chain(yes.then_some("--yes".into()))
                 .collect(),
         },
-        Commands::Audit(args) => vec!["audit".into(), args.number.to_string()],
     }
 }
 
