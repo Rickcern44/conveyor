@@ -79,6 +79,7 @@ delivery and requires the normal named-waiver path.
 conveyor build 70
 conveyor build 70 --dry-run
 conveyor build 70 --open-draft-pr --yes
+conveyor build retry 70 --yes
 conveyor status 70
 conveyor block 70 --reason "Waiting for API access" --owner platform-team
 conveyor resume 70 --to in-progress
@@ -102,6 +103,9 @@ trail as well as in the draft PR body.
 Use `block` to record an interruption and its decision owner locally. `resume`
 requires an explicit next workflow state, clears that blocker, and records the
 decision in the audit trail; it does not rerun an agent automatically.
+When a build was interrupted after branch creation but before its implementer
+ran, use `build retry` from that existing branch after resolving the recorded
+blocker and restoring the configured in-progress label.
 
 Use `--agent <name>` on `build` or `review` to select another configured
 `[[acp_agents]]` or `[[agent_commands]]` adapter for that one invocation. The
@@ -189,6 +193,13 @@ a follow-up to the same agent conversation with:
 ```sh
 conveyor agent continue 70 "Address the reviewer feedback, then run the checks."
 ```
+
+During an ACP turn, Conveyor prints agent messages, plans, and tool lifecycle
+updates. When the agent requests a sensitive operation, Conveyor shows the
+specific request and offers only a one-time approval. Declining the prompt (or
+having no one-time option) cancels that operation. `--yes` authorizes the
+Conveyor command itself; it never silently approves later ACP permission
+requests.
 
 Run `conveyor doctor` after configuring this: it checks the configured process
 executable (`npx` in this example). If an ACP agent is configured in a binary

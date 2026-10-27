@@ -2,6 +2,8 @@ use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::Path;
 use std::process::Command;
+#[cfg(feature = "acp")]
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use conveyor_core::agent_adapter::{CommandTemplate, TemplateContext};
@@ -30,13 +32,50 @@ struct AcpRunOutcome {
 }
 
 #[cfg(feature = "acp")]
+fn approve_acp_permission(
+    request: &agent_client_protocol::schema::v1::RequestPermissionRequest,
+) -> Option<agent_client_protocol::schema::v1::PermissionOptionId> {
+    use agent_client_protocol::schema::v1::PermissionOptionKind;
+
+    eprintln!(
+        "\nconveyor: ACP agent requests permission for {:?}",
+        request.tool_call
+    );
+    let allow_once = request
+        .options
+        .iter()
+        .find(|option| option.kind == PermissionOptionKind::AllowOnce);
+    let Some(option) = allow_once else {
+        eprintln!("conveyor: no one-time approval option was offered; permission denied");
+        return None;
+    };
+    let summary = format!(
+        "ACP agent requests one-time permission: {}\nApprove this specific operation?",
+        option.name
+    );
+    if TerminalPrompt.confirm(&summary) {
+        Some(option.option_id.clone())
+    } else {
+        None
+    }
+}
+
+#[cfg(feature = "acp")]
 fn run_acp_agent(
     agent_command: &AcpAgentCommand,
     prompt: &str,
     directory: &Path,
     existing_session_id: Option<&str>,
 ) -> Result<AcpRunOutcome, String> {
-    use agent_client_protocol::schema::{ProtocolVersion, v1::InitializeRequest};
+    use agent_client_protocol::schema::{
+        ProtocolVersion,
+        v1::{
+            ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest,
+            RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+            ResumeSessionRequest, SelectedPermissionOutcome, SessionNotification, SessionUpdate,
+            TextContent,
+        },
+    };
     use agent_client_protocol::{AcpAgent, Client};
 
     let command = std::iter::once(agent_command.program.clone())
@@ -54,49 +93,101 @@ fn run_acp_agent(
         "starting"
     };
     eprintln!("conveyor: {action} ACP agent `{}`...", agent_command.name);
-    let result = futures::executor::block_on(Client.builder().name("conveyor").connect_with(
-        agent,
-        async |connection| {
-            connection
-                .send_request(InitializeRequest::new(ProtocolVersion::V1))
-                .block_task()
-                .await?;
-            if let Some(session_id) = existing_session_id {
-                let mut session = connection
-                    .resume_session(session_id.to_owned(), directory)
-                    .block_task()
-                    .start_session()
-                    .await?
-                    .into_session();
-                let session_id = session.session_id().to_string();
-                session.send_prompt(prompt)?;
-                let response = session.read_to_string().await?;
-                Ok(AcpRunOutcome {
-                    session_id,
-                    response,
-                })
-            } else {
+    let existing_session_id = existing_session_id.map(str::to_owned);
+    let prompt = prompt.to_owned();
+    let directory = directory.to_path_buf();
+    let response = Arc::new(Mutex::new(String::new()));
+    let notification_response = Arc::clone(&response);
+    let result = futures::executor::block_on(
+        Client
+            .builder()
+            .on_receive_notification(
+                async move |notification: SessionNotification, _connection| {
+                    match notification.update {
+                        SessionUpdate::AgentMessageChunk(chunk) => {
+                            if let ContentBlock::Text(text) = chunk.content {
+                                eprint!("{}", text.text);
+                                let _ = io::stderr().flush();
+                                notification_response
+                                    .lock()
+                                    .expect("ACP response lock is not poisoned")
+                                    .push_str(&text.text);
+                            }
+                        }
+                        SessionUpdate::ToolCall(tool_call) => {
+                            eprintln!("\nconveyor: ACP tool started: {tool_call:?}");
+                        }
+                        SessionUpdate::ToolCallUpdate(tool_call) => {
+                            eprintln!("\nconveyor: ACP tool update: {tool_call:?}");
+                        }
+                        SessionUpdate::Plan(plan) => {
+                            eprintln!("\nconveyor: ACP plan: {plan:?}");
+                        }
+                        _ => {}
+                    }
+                    Ok(())
+                },
+                agent_client_protocol::on_receive_notification!(),
+            )
+            .on_receive_request(
+                async move |request: RequestPermissionRequest, responder, _connection| {
+                    let outcome = approve_acp_permission(&request).map_or(
+                        RequestPermissionOutcome::Cancelled,
+                        |option_id| {
+                            RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
+                                option_id,
+                            ))
+                        },
+                    );
+                    responder.respond(RequestPermissionResponse::new(outcome))
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .name("conveyor")
+            .connect_with(agent, async move |connection| {
                 connection
-                    .build_session(directory)
+                    .send_request(InitializeRequest::new(ProtocolVersion::V1))
                     .block_task()
-                    .run_until(async |mut session| {
-                        let session_id = session.session_id().to_string();
-                        session.send_prompt(prompt)?;
-                        let response = session.read_to_string().await?;
-                        Ok(AcpRunOutcome {
-                            session_id,
-                            response,
-                        })
-                    })
-                    .await
-            }
-        },
-    ))
+                    .await?;
+                let session_id = if let Some(session_id) = &existing_session_id {
+                    let session_id = session_id.clone();
+                    connection
+                        .send_request(ResumeSessionRequest::new(session_id.clone(), &directory))
+                        .block_task()
+                        .await?;
+                    session_id.into()
+                } else {
+                    connection
+                        .send_request(NewSessionRequest::new(&directory))
+                        .block_task()
+                        .await?
+                        .session_id
+                };
+                connection
+                    .send_request(PromptRequest::new(
+                        session_id.clone(),
+                        vec![ContentBlock::Text(TextContent::new(prompt))],
+                    ))
+                    .block_task()
+                    .await?;
+                Ok(AcpRunOutcome {
+                    session_id: session_id.to_string(),
+                    response: String::new(),
+                })
+            }),
+    )
     .map_err(|error| format!("ACP agent `{}` failed: {error}", agent_command.name));
     if result.is_ok() {
+        eprintln!();
         eprintln!("conveyor: ACP agent `{}` completed", agent_command.name);
     }
-    result
+    result.map(|mut outcome| {
+        outcome.response = response
+            .lock()
+            .expect("ACP response lock is not poisoned")
+            .clone();
+        outcome
+    })
 }
 
 fn main() {
@@ -471,6 +562,12 @@ fn parse_review_arguments(arguments: &[String]) -> Result<(&str, Option<&str>), 
 }
 
 fn build(arguments: &[String], directory: &Path) -> Result<String, String> {
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == "retry")
+    {
+        return retry_build(&arguments[1..], directory);
+    }
     let (number, explicit_yes, dry_run, open_draft_pr, requested_agent) =
         parse_build_arguments(arguments)?;
     let issue_number = parse_issue_number(number)?;
@@ -716,6 +813,151 @@ fn build(arguments: &[String], directory: &Path) -> Result<String, String> {
     Ok(format!(
         "build session started for issue #{issue_number} on {}; implementer completed",
         plan.branch
+    ))
+}
+
+fn retry_build(arguments: &[String], directory: &Path) -> Result<String, String> {
+    let (number, explicit_yes) = match arguments {
+        [number] => (number.as_str(), false),
+        [number, yes] if yes == "--yes" => (number.as_str(), true),
+        _ => return Err("Usage: conveyor build retry <number> [--yes]".to_owned()),
+    };
+    let issue_number = parse_issue_number(number)?;
+    let configuration = load_config(directory)?;
+    let labels = issue_labels(number, &configuration, directory)?;
+    if !labels
+        .iter()
+        .any(|label| label == &configuration.workflow.in_progress_label)
+    {
+        return Err(format!(
+            "issue #{issue_number} must have `{}` before retrying the implementer",
+            configuration.workflow.in_progress_label
+        ));
+    }
+    let store = SessionStore::new(directory);
+    let mut session = load_session(&store, issue_number)?;
+    if session.state != IssueState::InProgress {
+        return Err(format!(
+            "issue #{issue_number} is {}; resume it to in-progress before retrying",
+            session.state.as_str()
+        ));
+    }
+    if session.agent_command.is_some() {
+        return Err(format!(
+            "issue #{issue_number} already has an implementer outcome; use `conveyor agent continue {issue_number} <prompt>` or inspect `conveyor status {issue_number}`"
+        ));
+    }
+    if current_branch(directory)? != session.branch {
+        return Err(format!(
+            "retry must run on `{}`; switch to that branch first",
+            session.branch
+        ));
+    }
+    let contract = from_markdown(&fetch_issue_body(number, directory)?);
+    let validation = validate(&contract);
+    if !validation.is_valid() {
+        return Err(format!(
+            "issue #{issue_number} is not ready for implementation"
+        ));
+    }
+    let agent_name = &configuration.agents.implementer;
+    let acp_agent = configuration.acp_agent(agent_name);
+    #[cfg(not(feature = "acp"))]
+    if acp_agent.is_some() {
+        return Err(acp_feature_required(agent_name));
+    }
+    let command = configuration.agent_command(agent_name).cloned();
+    let agent_program = acp_agent
+        .as_ref()
+        .map(|agent| agent.program.as_str())
+        .or_else(|| command.as_ref().map(|agent| agent.program.as_str()))
+        .ok_or_else(|| format!("no configured implementer named `{agent_name}`"))?
+        .to_owned();
+    let summary = format!(
+        "Retry implementer for issue #{issue_number}\nBranch: {}\nAgent: {agent_program}",
+        session.branch
+    );
+    if authorize(explicit_yes, &TerminalPrompt, &summary) == Decision::Declined {
+        return Err("build retry cancelled; no agent was started".to_owned());
+    }
+    let guidance = std::fs::read_to_string(directory.join("AGENTS.md"))
+        .unwrap_or_else(|_| "No repository agent guidance was found.".to_owned());
+    let packet = TaskPacket::new(
+        issue_number,
+        AgentRole::Implementer,
+        &session.branch,
+        configuration
+            .commit_message_for_issue(issue_number)
+            .map_err(|error| error.to_string())?,
+        contract,
+        guidance,
+        configuration.checks.clone(),
+    );
+    let packet_path = write_packet(directory, &packet)?;
+    let (invocation, exit_code, failure) = if let Some(agent) = &acp_agent {
+        #[cfg(feature = "acp")]
+        {
+            let invocation = format!("ACP {}", agent.program);
+            match run_acp_agent(agent, &packet.to_markdown(), directory, None) {
+                Ok(outcome) => {
+                    session.record_acp_session(&agent.name, outcome.session_id);
+                    (invocation, Some(0), None)
+                }
+                Err(error) => (invocation, None, Some(error)),
+            }
+        }
+        #[cfg(not(feature = "acp"))]
+        {
+            let _ = agent;
+            unreachable!("ACP agents are rejected before execution")
+        }
+    } else {
+        let command = command.expect("direct implementer command is configured");
+        let invocation = CommandTemplate {
+            program: command.program,
+            args: command.args,
+        }
+        .expand(&TemplateContext {
+            packet_path: packet_path.display().to_string(),
+            repository_root: directory.display().to_string(),
+            issue_number,
+            branch: session.branch.clone(),
+            role: AgentRole::Implementer.as_str().to_owned(),
+        })
+        .map_err(|error| format!("invalid implementer command template: {error}"))?;
+        let output = Command::new(&invocation.program)
+            .args(&invocation.args)
+            .current_dir(directory)
+            .output()
+            .map_err(|error| {
+                format!(
+                    "could not start implementer `{}`: {error}",
+                    invocation.program
+                )
+            })?;
+        let failure = (!output.status.success()).then(|| {
+            format!(
+                "implementer exited unsuccessfully: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )
+        });
+        (
+            std::iter::once(invocation.program.as_str())
+                .chain(invocation.args.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+                .join(" "),
+            output.status.code(),
+            failure,
+        )
+    };
+    session.record_agent_outcome(invocation, exit_code);
+    store.save(&session).map_err(|error| error.to_string())?;
+    record_audit(directory, issue_number, "retry_implementer", &agent_program)?;
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    Ok(format!(
+        "implementer retry completed for issue #{issue_number}"
     ))
 }
 
@@ -1717,7 +1959,7 @@ fn initialize(arguments: &[String], directory: &Path) -> Result<String, String> 
 }
 
 fn usage() -> &'static str {
-    "Usage:\n  conveyor init --repository <owner/repository> [--target-branch <branch>]\n  conveyor doctor\n  conveyor status [issue]\n  conveyor block <number> --reason <text> --owner <name>\n  conveyor resume <number> --to <state>\n  conveyor agent continue <number> <prompt>\n  conveyor issue scaffold <path>\n  conveyor issue create --title <title> --body-file <path> [--yes]\n  conveyor issue adapt <number> [--apply] [--yes]\n  conveyor issue validate <number> [--format human|json]\n  conveyor handoff <number> --role <planner|implementer|reviewer>\n  conveyor build <number> [--agent <name>] [--open-draft-pr] [--dry-run|--yes]\n  conveyor verify [--format human|json]\n  conveyor review <number> [--agent <name>]\n  conveyor pr open <number> [--waive-by <name>] [--yes]\n  conveyor audit <number>"
+    "Usage:\n  conveyor init --repository <owner/repository> [--target-branch <branch>]\n  conveyor doctor\n  conveyor status [issue]\n  conveyor block <number> --reason <text> --owner <name>\n  conveyor resume <number> --to <state>\n  conveyor agent continue <number> <prompt>\n  conveyor issue scaffold <path>\n  conveyor issue create --title <title> --body-file <path> [--yes]\n  conveyor issue adapt <number> [--apply] [--yes]\n  conveyor issue validate <number> [--format human|json]\n  conveyor handoff <number> --role <planner|implementer|reviewer>\n  conveyor build <number> [--agent <name>] [--open-draft-pr] [--dry-run|--yes]\n  conveyor build retry <number> [--yes]\n  conveyor verify [--format human|json]\n  conveyor review <number> [--agent <name>]\n  conveyor pr open <number> [--waive-by <name>] [--yes]\n  conveyor audit <number>"
 }
 
 #[cfg(test)]
