@@ -1,4 +1,6 @@
 use std::fs::OpenOptions;
+#[cfg(feature = "acp")]
+use std::io::IsTerminal;
 use std::io::{self, Write};
 use std::path::Path;
 use std::process::Command;
@@ -32,15 +34,65 @@ struct AcpRunOutcome {
 }
 
 #[cfg(feature = "acp")]
+#[derive(Debug)]
+enum AgentEvent {
+    Message(String),
+    ToolStarted(String),
+    ToolUpdated(String),
+    Plan(usize),
+    PermissionRequested(String),
+}
+
+#[cfg(feature = "acp")]
+#[derive(Clone)]
+struct AgentEventRenderer {
+    interactive: bool,
+}
+
+#[cfg(feature = "acp")]
+impl AgentEventRenderer {
+    fn for_terminal() -> Self {
+        Self {
+            interactive: io::stderr().is_terminal(),
+        }
+    }
+
+    fn emit(&self, event: AgentEvent) {
+        if !self.interactive {
+            eprintln!("conveyor: ACP event {event:?}");
+            return;
+        }
+        match event {
+            AgentEvent::Message(text) => {
+                eprint!("{text}");
+                let _ = io::stderr().flush();
+            }
+            AgentEvent::ToolStarted(title) => eprintln!("\n• {title}"),
+            AgentEvent::ToolUpdated(detail) => eprintln!("  {detail}"),
+            AgentEvent::Plan(steps) => eprintln!("\n• Agent updated its plan ({steps} steps)"),
+            AgentEvent::PermissionRequested(detail) => {
+                eprintln!("\nPermission requested\n{detail}")
+            }
+        }
+    }
+}
+
+#[cfg(feature = "acp")]
 fn approve_acp_permission(
     request: &agent_client_protocol::schema::v1::RequestPermissionRequest,
+    renderer: &AgentEventRenderer,
 ) -> Option<agent_client_protocol::schema::v1::PermissionOptionId> {
     use agent_client_protocol::schema::v1::PermissionOptionKind;
 
-    eprintln!(
-        "\nconveyor: ACP agent requests permission for {:?}",
-        request.tool_call
-    );
+    renderer.emit(AgentEvent::PermissionRequested(format!(
+        "Operation: {}",
+        request
+            .tool_call
+            .fields
+            .title
+            .as_deref()
+            .unwrap_or("agent tool operation")
+    )));
     let allow_once = request
         .options
         .iter()
@@ -98,6 +150,9 @@ fn run_acp_agent(
     let directory = directory.to_path_buf();
     let response = Arc::new(Mutex::new(String::new()));
     let notification_response = Arc::clone(&response);
+    let renderer = AgentEventRenderer::for_terminal();
+    let notification_renderer = renderer.clone();
+    let permission_renderer = renderer.clone();
     let result = futures::executor::block_on(
         Client
             .builder()
@@ -106,8 +161,7 @@ fn run_acp_agent(
                     match notification.update {
                         SessionUpdate::AgentMessageChunk(chunk) => {
                             if let ContentBlock::Text(text) = chunk.content {
-                                eprint!("{}", text.text);
-                                let _ = io::stderr().flush();
+                                notification_renderer.emit(AgentEvent::Message(text.text.clone()));
                                 notification_response
                                     .lock()
                                     .expect("ACP response lock is not poisoned")
@@ -115,13 +169,23 @@ fn run_acp_agent(
                             }
                         }
                         SessionUpdate::ToolCall(tool_call) => {
-                            eprintln!("\nconveyor: ACP tool started: {tool_call:?}");
+                            notification_renderer.emit(AgentEvent::ToolStarted(tool_call.title));
                         }
                         SessionUpdate::ToolCallUpdate(tool_call) => {
-                            eprintln!("\nconveyor: ACP tool update: {tool_call:?}");
+                            let title = tool_call
+                                .fields
+                                .title
+                                .unwrap_or_else(|| format!("Tool {}", tool_call.tool_call_id));
+                            let status = tool_call
+                                .fields
+                                .status
+                                .map(|status| format!(" ({status:?})"))
+                                .unwrap_or_default();
+                            notification_renderer
+                                .emit(AgentEvent::ToolUpdated(format!("↳ {title}{status}")));
                         }
                         SessionUpdate::Plan(plan) => {
-                            eprintln!("\nconveyor: ACP plan: {plan:?}");
+                            notification_renderer.emit(AgentEvent::Plan(plan.entries.len()));
                         }
                         _ => {}
                     }
@@ -131,7 +195,7 @@ fn run_acp_agent(
             )
             .on_receive_request(
                 async move |request: RequestPermissionRequest, responder, _connection| {
-                    let outcome = approve_acp_permission(&request).map_or(
+                    let outcome = approve_acp_permission(&request, &permission_renderer).map_or(
                         RequestPermissionOutcome::Cancelled,
                         |option_id| {
                             RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
