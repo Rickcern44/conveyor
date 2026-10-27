@@ -453,6 +453,72 @@ fn read_evidence(directory: &Path, configuration: &Config) -> Result<EvidenceRep
         .map_err(|error| format!("could not parse latest verification evidence: {error}"))
 }
 
+fn open_draft_pr_after_build(
+    issue_number: u64,
+    branch: &str,
+    configuration: &Config,
+    directory: &Path,
+) -> Result<String, String> {
+    let body = match &configuration.conveyor.pr_template_path {
+        Some(path) => std::fs::read_to_string(directory.join(path))
+            .map_err(|error| format!("could not read PR template {path}: {error}"))?,
+        None => format!("## Conveyor delivery\n\nIssue: #{issue_number}\n"),
+    };
+    let delivery_path = directory.join(format!(".conveyor/reviews/{issue_number}-delivery.md"));
+    let reports = delivery_path
+        .parent()
+        .expect("delivery path always has a parent");
+    std::fs::create_dir_all(reports)
+        .map_err(|error| format!("could not create {}: {error}", reports.display()))?;
+    std::fs::write(&delivery_path, delivery_summary(&body, None))
+        .map_err(|error| format!("could not write {}: {error}", delivery_path.display()))?;
+
+    run_command(
+        "git",
+        ["push", "-u", &configuration.conveyor.remote, branch],
+        directory,
+        "could not push branch",
+    )?;
+    record_audit(
+        directory,
+        issue_number,
+        "push_branch",
+        format!("{}/{branch}", configuration.conveyor.remote),
+    )?;
+    let title = format!("Conveyor: issue #{issue_number}");
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "create",
+            "--repo",
+            &configuration.github.repository,
+            "--draft",
+            "--base",
+            &configuration.conveyor.target_branch,
+            "--head",
+            branch,
+            "--title",
+            &title,
+            "--body-file",
+            delivery_path
+                .to_str()
+                .ok_or("delivery summary path is not valid UTF-8")?,
+        ])
+        .current_dir(directory)
+        .output()
+        .map_err(|error| format!("could not run gh: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "could not create draft PR: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let pr_target = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    mark_session_in_review(directory, issue_number)?;
+    record_audit(directory, issue_number, "open_draft_pr", &pr_target)?;
+    Ok(format!("created draft PR: {pr_target}"))
+}
+
 fn current_branch(directory: &Path) -> Result<String, String> {
     git_output(
         ["branch", "--show-current"],
@@ -571,25 +637,18 @@ fn git_output<const N: usize>(
     }
 }
 
-fn parse_build_arguments(
-    arguments: &[String],
-) -> Result<(&str, bool, bool, bool, Option<&str>), String> {
+fn parse_build_arguments(arguments: &[String]) -> Result<(&str, bool, bool, Option<&str>), String> {
     let Some(number) = arguments.first() else {
-        return Err(
-            "Usage: conveyor build <number> [--agent <name>] [--open-draft-pr] [--dry-run|--yes]"
-                .to_owned(),
-        );
+        return Err("Usage: conveyor build <number> [--agent <name>] [--dry-run|--yes]".to_owned());
     };
     let mut explicit_yes = false;
     let mut dry_run = false;
-    let mut open_draft_pr = false;
     let mut requested_agent = None;
     let mut index = 1;
     while index < arguments.len() {
         match arguments[index].as_str() {
             "--yes" if !explicit_yes => explicit_yes = true,
             "--dry-run" if !dry_run => dry_run = true,
-            "--open-draft-pr" if !open_draft_pr => open_draft_pr = true,
             "--agent" if requested_agent.is_none() => {
                 let Some(agent) = arguments.get(index + 1) else {
                     return Err("--agent requires a configured agent name".to_owned());
@@ -599,7 +658,7 @@ fn parse_build_arguments(
             }
             _ => {
                 return Err(
-                    "Usage: conveyor build <number> [--agent <name>] [--open-draft-pr] [--dry-run|--yes]".to_owned(),
+                    "Usage: conveyor build <number> [--agent <name>] [--dry-run|--yes]".to_owned(),
                 );
             }
         }
@@ -608,13 +667,7 @@ fn parse_build_arguments(
     if dry_run && explicit_yes {
         return Err("--dry-run cannot be combined with --yes".to_owned());
     }
-    Ok((
-        number,
-        explicit_yes,
-        dry_run,
-        open_draft_pr,
-        requested_agent,
-    ))
+    Ok((number, explicit_yes, dry_run, requested_agent))
 }
 
 fn parse_review_arguments(arguments: &[String]) -> Result<(&str, Option<&str>), String> {
@@ -632,8 +685,7 @@ fn build(arguments: &[String], directory: &Path) -> Result<String, String> {
     {
         return retry_build(&arguments[1..], directory);
     }
-    let (number, explicit_yes, dry_run, open_draft_pr, requested_agent) =
-        parse_build_arguments(arguments)?;
+    let (number, explicit_yes, dry_run, requested_agent) = parse_build_arguments(arguments)?;
     let issue_number = parse_issue_number(number)?;
     let configuration = load_config(directory)?;
     let labels = issue_labels(number, &configuration, directory)?;
@@ -694,13 +746,8 @@ fn build(arguments: &[String], directory: &Path) -> Result<String, String> {
             agent_program
         ));
     }
-    let delivery_plan = if open_draft_pr {
-        "\nAfter a clean agent result: run verification, review, push the branch, and create a draft PR"
-    } else {
-        ""
-    };
     let summary = format!(
-        "Issue #{issue_number}\nBranch to create: {}\nGitHub label transition: {} -> {}\nLocal session: .conveyor/sessions/{issue_number}.json\nAgent command: {}{delivery_plan}",
+        "Issue #{issue_number}\nBranch to create: {}\nGitHub label transition: {} -> {}\nLocal session: .conveyor/sessions/{issue_number}.json\nAgent command: {}\nAfter a clean agent result: push the branch and create a draft PR",
         plan.branch,
         configuration.workflow.ready_label,
         configuration.workflow.in_progress_label,
@@ -844,38 +891,16 @@ fn build(arguments: &[String], directory: &Path) -> Result<String, String> {
     if let Some(error) = agent_failure {
         return Err(error);
     }
-    if open_draft_pr {
-        if !worktree_is_clean(directory)? {
-            return Err(
-                "implementer completed, but --open-draft-pr requires a clean worktree; commit or stash the changes, then run `conveyor verify`, `conveyor review`, and `conveyor pr open`"
-                    .to_owned(),
-            );
-        }
-        let evidence = EvidenceReport::new(
-            current_revision(directory),
-            verify(&LocalCommandRunner { directory }, &configuration.checks),
+    if !worktree_is_clean(directory)? {
+        return Err(
+            "implementer completed, but the worktree is not clean; commit or stash the changes, then run `conveyor pr open` when ready"
+                .to_owned(),
         );
-        write_evidence(directory, &configuration, &evidence)?;
-        if !evidence.verification.passes_required_checks() {
-            return Err(
-                "implementer completed, but required checks failed; run `conveyor verify` and use `conveyor pr open --waive-by <name>` only with an explicit waiver"
-                    .to_owned(),
-            );
-        }
-        let review_result = review(&[number.to_owned()], directory)?;
-        let pr_arguments = if explicit_yes {
-            vec!["open".to_owned(), number.to_owned(), "--yes".to_owned()]
-        } else {
-            vec!["open".to_owned(), number.to_owned()]
-        };
-        let pr_result = pr(&pr_arguments, directory)?;
-        return Ok(format!(
-            "build session started for issue #{issue_number} on {}; implementer completed\n{review_result}\n{pr_result}",
-            plan.branch
-        ));
     }
+    let pr_result =
+        open_draft_pr_after_build(issue_number, &plan.branch, &configuration, directory)?;
     Ok(format!(
-        "build session started for issue #{issue_number} on {}; implementer completed",
+        "build session started for issue #{issue_number} on {}; implementer completed\n{pr_result}",
         plan.branch
     ))
 }
@@ -1227,17 +1252,101 @@ fn write_packet(directory: &Path, packet: &TaskPacket) -> Result<std::path::Path
 }
 
 fn verify_command(arguments: &[String], directory: &Path) -> Result<String, String> {
-    let format = parse_format(arguments)?;
+    let (format, explicit_yes) = parse_verify_arguments(arguments)?;
     let configuration = load_config(directory)?;
     let evidence = EvidenceReport::new(
         current_revision(directory),
         verify(&LocalCommandRunner { directory }, &configuration.checks),
     );
     write_evidence(directory, &configuration, &evidence)?;
+    let comment_result =
+        comment_verification_on_pr(&evidence, &configuration, directory, explicit_yes)?;
     match format {
-        ReportFormat::Human => Ok(render_verification_human(&evidence.verification)),
+        ReportFormat::Human => Ok(format!(
+            "{}\n{comment_result}",
+            render_verification_human(&evidence.verification)
+        )),
         ReportFormat::Json => Ok(evidence.to_json()),
     }
+}
+
+fn comment_verification_on_pr(
+    evidence: &EvidenceReport,
+    configuration: &Config,
+    directory: &Path,
+    explicit_yes: bool,
+) -> Result<String, String> {
+    let branch = match current_branch(directory) {
+        Ok(branch) if !branch.is_empty() && branch != configuration.conveyor.target_branch => {
+            branch
+        }
+        _ => return Ok("verification PR comment: skipped (no delivery branch)".to_owned()),
+    };
+    let lookup = Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &branch,
+            "--repo",
+            &configuration.github.repository,
+            "--json",
+            "url",
+            "--jq",
+            ".url",
+        ])
+        .current_dir(directory)
+        .output()
+        .map_err(|error| format!("could not run gh: {error}"))?;
+    if !lookup.status.success() {
+        return Ok("verification PR comment: skipped (no PR for this branch)".to_owned());
+    }
+    let pr_url = String::from_utf8_lossy(&lookup.stdout).trim().to_owned();
+    if configuration.requires_confirmation(ConfirmationAction::CommentPr)
+        && authorize(
+            explicit_yes,
+            &TerminalPrompt,
+            &format!("Post verification report to draft PR: {pr_url}"),
+        ) == Decision::Declined
+    {
+        return Ok("verification PR comment: skipped (confirmation declined)".to_owned());
+    }
+    let comment_path = directory.join(".conveyor/reports/verification-comment.md");
+    let reports = comment_path
+        .parent()
+        .expect("verification comment path always has a parent");
+    std::fs::create_dir_all(reports)
+        .map_err(|error| format!("could not create {}: {error}", reports.display()))?;
+    std::fs::write(
+        &comment_path,
+        format!(
+            "## Conveyor verification\n\nRevision: `{}`\n\n{}\n",
+            evidence.revision,
+            render_verification_human(&evidence.verification)
+        ),
+    )
+    .map_err(|error| format!("could not write {}: {error}", comment_path.display()))?;
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "comment",
+            &branch,
+            "--repo",
+            &configuration.github.repository,
+            "--body-file",
+            comment_path
+                .to_str()
+                .ok_or("verification comment path is not valid UTF-8")?,
+        ])
+        .current_dir(directory)
+        .output()
+        .map_err(|error| format!("could not run gh: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "could not post verification PR comment: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(format!("verification PR comment: posted to {pr_url}"))
 }
 
 fn current_revision(directory: &Path) -> String {
@@ -1862,6 +1971,35 @@ fn parse_format(options: &[String]) -> Result<ReportFormat, String> {
     }
 }
 
+fn parse_verify_arguments(options: &[String]) -> Result<(ReportFormat, bool), String> {
+    let mut format = ReportFormat::Human;
+    let mut explicit_yes = false;
+    let mut index = 0;
+    while index < options.len() {
+        match options[index].as_str() {
+            "--yes" if !explicit_yes => explicit_yes = true,
+            "--format" => {
+                let Some(value) = options.get(index + 1) else {
+                    return Err("Usage: conveyor verify [--format human|json] [--yes]".to_owned());
+                };
+                format = match value.as_str() {
+                    "human" => ReportFormat::Human,
+                    "json" => ReportFormat::Json,
+                    _ => {
+                        return Err(
+                            "Usage: conveyor verify [--format human|json] [--yes]".to_owned()
+                        );
+                    }
+                };
+                index += 1;
+            }
+            _ => return Err("Usage: conveyor verify [--format human|json] [--yes]".to_owned()),
+        }
+        index += 1;
+    }
+    Ok((format, explicit_yes))
+}
+
 fn doctor(directory: &Path) -> Result<String, String> {
     let configuration = load_config(directory)?;
     let report = Doctor::new(&SystemProbe { directory }).check(&configuration);
@@ -2023,7 +2161,7 @@ fn initialize(arguments: &[String], directory: &Path) -> Result<String, String> 
 }
 
 fn usage() -> &'static str {
-    "Usage:\n  conveyor init --repository <owner/repository> [--target-branch <branch>]\n  conveyor doctor\n  conveyor status [issue]\n  conveyor block <number> --reason <text> --owner <name>\n  conveyor resume <number> --to <state>\n  conveyor agent continue <number> <prompt>\n  conveyor issue scaffold <path>\n  conveyor issue create --title <title> --body-file <path> [--yes]\n  conveyor issue adapt <number> [--apply] [--yes]\n  conveyor issue validate <number> [--format human|json]\n  conveyor handoff <number> --role <planner|implementer|reviewer>\n  conveyor build <number> [--agent <name>] [--open-draft-pr] [--dry-run|--yes]\n  conveyor build retry <number> [--yes]\n  conveyor verify [--format human|json]\n  conveyor review <number> [--agent <name>]\n  conveyor pr open <number> [--waive-by <name>] [--yes]\n  conveyor audit <number>"
+    "Usage:\n  conveyor init --repository <owner/repository> [--target-branch <branch>]\n  conveyor doctor\n  conveyor status [issue]\n  conveyor block <number> --reason <text> --owner <name>\n  conveyor resume <number> --to <state>\n  conveyor agent continue <number> <prompt>\n  conveyor issue scaffold <path>\n  conveyor issue create --title <title> --body-file <path> [--yes]\n  conveyor issue adapt <number> [--apply] [--yes]\n  conveyor issue validate <number> [--format human|json]\n  conveyor handoff <number> --role <planner|implementer|reviewer>\n  conveyor build <number> [--agent <name>] [--dry-run|--yes]\n  conveyor build retry <number> [--yes]\n  conveyor verify [--format human|json] [--yes]\n  conveyor review <number> [--agent <name>]\n  conveyor pr open <number> [--waive-by <name>] [--yes]\n  conveyor audit <number>"
 }
 
 #[cfg(test)]
@@ -2035,7 +2173,10 @@ mod tests {
     use conveyor_core::task_packet::{AgentRole, TaskPacket};
     use conveyor_core::workflow::IssueState;
 
-    use super::{evidence_path, parse_build_arguments, parse_review_arguments, run, write_packet};
+    use super::{
+        evidence_path, parse_build_arguments, parse_review_arguments, parse_verify_arguments, run,
+        write_packet,
+    };
 
     fn temporary_directory(name: &str) -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!("conveyor-cli-{name}-{}", std::process::id()));
@@ -2094,20 +2235,25 @@ mod tests {
         ];
         let parsed = parse_build_arguments(&arguments).unwrap();
 
-        assert_eq!(parsed, ("70", true, false, false, Some("local")));
+        assert_eq!(parsed, ("70", true, false, Some("local")));
         assert!(parse_build_arguments(&["70".to_owned(), "--agent".to_owned()]).is_err());
         assert_eq!(
             parse_build_arguments(&["70".to_owned(), "--dry-run".to_owned()]).unwrap(),
-            ("70", false, true, false, None)
+            ("70", false, true, None)
         );
-        assert_eq!(
-            parse_build_arguments(&["70".to_owned(), "--open-draft-pr".to_owned()]).unwrap(),
-            ("70", false, false, true, None)
-        );
+        assert!(parse_build_arguments(&["70".to_owned(), "--open-draft-pr".to_owned()]).is_err());
         assert!(
             parse_build_arguments(&["70".to_owned(), "--dry-run".to_owned(), "--yes".to_owned(),])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn verify_arguments_allow_non_interactive_pr_comments() {
+        assert!(matches!(
+            parse_verify_arguments(&["--yes".to_owned(), "--format".to_owned(), "json".to_owned()]),
+            Ok((super::ReportFormat::Json, true))
+        ));
     }
 
     #[test]

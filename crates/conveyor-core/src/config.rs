@@ -74,6 +74,7 @@ pub struct AcpAgentCommand {
 pub enum ConfirmationAction {
     Push,
     OpenPr,
+    CommentPr,
     Merge,
     Deploy,
 }
@@ -83,6 +84,7 @@ impl ConfirmationAction {
         match self {
             Self::Push => "push",
             Self::OpenPr => "open_pr",
+            Self::CommentPr => "comment_pr",
             Self::Merge => "merge",
             Self::Deploy => "deploy",
         }
@@ -92,6 +94,7 @@ impl ConfirmationAction {
         match value {
             "push" => Ok(Self::Push),
             "open_pr" => Ok(Self::OpenPr),
+            "comment_pr" => Ok(Self::CommentPr),
             "merge" => Ok(Self::Merge),
             "deploy" => Ok(Self::Deploy),
             _ => Err(ConfigError::InvalidValue {
@@ -126,6 +129,7 @@ impl Config {
                 require_confirmation_for: vec![
                     ConfirmationAction::Push,
                     ConfirmationAction::OpenPr,
+                    ConfirmationAction::CommentPr,
                     ConfirmationAction::Merge,
                     ConfirmationAction::Deploy,
                 ],

@@ -96,6 +96,15 @@ if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
   printf 'https://example.test/owner/repository/pull/70\n'
   exit 0
 fi
+if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+  printf '%s\n' "$*" >> "$CONVEYOR_GH_LOG"
+  printf 'https://example.test/owner/repository/pull/70\n'
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "comment" ]; then
+  printf '%s\n' "$*" >> "$CONVEYOR_GH_LOG"
+  exit 0
+fi
 exit 1
 "#,
     )
@@ -170,9 +179,9 @@ exit 1
         "main"
     );
     let output = Command::new(env!("CARGO_BIN_EXE_conveyor"))
-        .args(["build", "70", "--open-draft-pr", "--yes"])
+        .args(["build", "70", "--yes"])
         .current_dir(&repository)
-        .env("PATH", path)
+        .env("PATH", &path)
         .env("CONVEYOR_GH_LOG", &gh_log)
         .output()
         .unwrap();
@@ -213,9 +222,7 @@ exit 1
             .unwrap()
             .contains("issue view 70 --repo owner/repository --json body")
     );
-    assert!(String::from_utf8_lossy(&output.stdout).contains("reviewer completed"));
     assert!(String::from_utf8_lossy(&output.stdout).contains("created draft PR"));
-    assert!(repository.join(".conveyor/reviews/70.md").is_file());
     assert!(
         fs::read_to_string(repository.join(".conveyor/reviews/70-delivery.md"))
             .unwrap()
@@ -232,13 +239,27 @@ exit 1
             .contains("\"state\": \"in-review\"")
     );
     assert!(fs::read_to_string(&gh_log).unwrap().contains("pr create"));
+    let verification = Command::new(env!("CARGO_BIN_EXE_conveyor"))
+        .args(["verify", "--yes"])
+        .current_dir(&repository)
+        .env("PATH", &path)
+        .env("CONVEYOR_GH_LOG", &gh_log)
+        .output()
+        .unwrap();
+    assert!(verification.status.success());
+    assert!(
+        String::from_utf8_lossy(&verification.stdout).contains("verification PR comment: posted")
+    );
+    assert!(
+        fs::read_to_string(&gh_log)
+            .unwrap()
+            .contains("pr comment feat/70-build")
+    );
     let audit = fs::read_to_string(repository.join(".conveyor/audit/70.jsonl")).unwrap();
     for action in [
         "create_branch",
         "transition_issue",
         "run_implementer",
-        "run_reviewer",
-        "transition_session",
         "push_branch",
         "open_draft_pr",
     ] {

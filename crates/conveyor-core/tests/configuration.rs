@@ -23,6 +23,7 @@ fn default_configuration_has_safe_delivery_policy() {
         vec![
             ConfirmationAction::Push,
             ConfirmationAction::OpenPr,
+            ConfirmationAction::CommentPr,
             ConfirmationAction::Merge,
             ConfirmationAction::Deploy,
         ]
