@@ -10,9 +10,10 @@ perform bounded planning, implementation, and review work.
 The CLI has an issue contract, configurable workflow labels, local sessions
 and audit records, direct-command and ACP agent adapters, verification
 evidence, review packets, and draft-PR delivery. ACP turns now produce
-normalized terminal events and ask for one-time permission decisions.
+normalized, durable event summaries with JSONL output; the local TUI presents
+session and activity views over the same records.
 
-## Phase 1 — durable agent event stream
+## Phase 1 — durable agent event stream ✓
 
 Promote the CLI-local ACP event model into a public, versioned core type.
 Every agent adapter should emit the same event categories:
@@ -35,7 +36,7 @@ Acceptance criteria:
 - The human terminal renderer and JSONL stream describe the same event.
 - Permission decisions are auditable without storing sensitive tool output.
 
-## Phase 2 — SQLite control-plane storage
+## Phase 2 — SQLite control-plane storage (in progress)
 
 JSON files remain useful portable artifacts, but use SQLite for durable,
 queryable operational state once Conveyor gains long-running processes,
@@ -64,49 +65,40 @@ Acceptance criteria:
 - Every external mutation is linked to its session, decision, and audit event.
 - `conveyor export` can produce portable JSON records for support or migration.
 
-## Phase 3 — chat-ops interaction and notifications
+## Phase 3 — local operator communication and runner control
 
-Introduce a notification abstraction for events that need a human decision:
+For a solo local software factory, establish Conveyor as the operator
+communication layer before adding third-party chat. Add `conveyord`, a local
+daemon backed by SQLite and a versioned Unix-domain-socket API. The TUI is the
+primary operator surface; the CLI remains a complete fallback and automation
+surface. Both must call the same decision API and never implement policy
+independently.
 
-- ACP permission or elicitation requests;
-- blocked sessions and named decision owners;
-- failed required verification;
-- draft PR ready for approval;
-- retry/recovery actions after partial Git or GitHub mutations.
-
-Start with Slack because it supports authenticated interactive controls,
-threads, and team-level routing. Discord and Telegram should use the same
-adapter interface for smaller teams or personal workflows. Email and generic
-webhooks remain notification-only fallback channels.
-
-Chat messages should contain a minimal summary and links to GitHub and local
-artifacts, never source files, secrets, or full agent transcripts. They can
-offer narrow actions such as **Approve once**, **Deny**, **View status**, or
-**Open draft PR**, but every action must be signed, tied to a pending decision,
-and revalidated by Conveyor before execution.
-
-Each notification needs deduplication, acknowledgement state, escalation
-timeout, and an audit entry. A notification never authorizes an action by
-itself: the operator must make a separate explicit decision in Conveyor.
+The daemon owns long-lived ACP turns, pending decisions, event fan-out, and
+local runner lifecycle. Persist permission and elicitation requests with expiry,
+idempotency, and selected outcome. The TUI presents a compact inbox with
+explicit **Approve once**, **Deny**, and **Cancel** actions. Closing a terminal
+must not lose a request or silently approve it.
 
 Acceptance criteria:
 
-- An ACP permission request creates one expiring, auditable chat approval card.
-- Only configured and authenticated operators can answer it.
-- Duplicate delivery, an expired button, or an altered payload cannot execute
-  an action.
-- The CLI remains a complete fallback when no chat integration is configured.
+- An ACP request creates one expiring, auditable local pending decision.
+- TUI and CLI inspect and answer the same decision through the local API.
+- Duplicate, expired, or altered answers cannot execute an action.
+- Restarted daemon processes recover pending work safely.
 
-## Phase 4 — optional local UI
+## Phase 4 — remote runner and notifications
 
-A local UI becomes valuable later for dense operational views rather than as
-the first approval surface. It should consume the same SQLite-backed event
-stream and use the same Conveyor decision API as chat integrations.
+Add authenticated remote runner registration for dedicated development PCs. A
+remote runner executes an ACP adapter but has no independent delivery authority;
+it receives bounded work and returns the same event stream. Start with private
+authenticated networking, never a public control-plane endpoint.
 
-Useful first views are an issue/session queue, event timeline, verification and
-review readiness, file-change summaries, and GitHub links. The UI sends intent
-to Conveyor; it must never hold GitHub credentials or communicate directly with
-an agent adapter.
+Once the local decision API is stable, add self-hosted `ntfy` as a
+notification-only adapter for pending decisions and completed work. A
+notification is never authority: it directs the operator back to Conveyor.
+Slack, Discord, Telegram, email, and generic webhooks remain later optional
+team integrations.
 
 ## Phase 5 — timers and scheduled control-plane work
 
@@ -162,8 +154,9 @@ should be required for the CLI-only workflow.
 1. Extract `AgentEvent` into `conveyor-core` and add JSONL output.
 2. Introduce SQLite migrations, session/event storage, and JSON export.
 3. Add persistent permission-request records and a CLI answer command.
-4. Build Slack first, then Discord/Telegram adapters, with signed expiring actions.
-5. Add a local scheduler for read-only reminders and reconciliation.
-6. Add authenticated GitHub webhook intake and durable event processing.
-7. Build a local operational UI only when chat and CLI views no longer provide
-   sufficient visibility.
+4. Add `conveyord` plus a Unix-socket local decision API; move the TUI onto it.
+5. Add persistent decision records and a CLI/TUI answer flow.
+6. Add local ACP runner lifecycle, recovery, and event fan-out.
+7. Add an authenticated remote runner host, then optional ntfy notifications.
+8. Add a scheduler and later GitHub webhook intake after the local control
+   plane is stable.

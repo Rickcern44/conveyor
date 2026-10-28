@@ -6,6 +6,7 @@ use std::path::Path;
 use std::process::Command;
 
 use conveyor_core::config::Config;
+use conveyor_core::control_plane::ControlPlaneStore;
 use conveyor_core::doctor::{Doctor, FindingKind, Probe, ProbeResult};
 
 pub(crate) fn initialize(
@@ -34,6 +35,9 @@ pub(crate) fn initialize(
     output
         .write_all(content.as_bytes())
         .map_err(|error| format!("could not write {}: {error}", path.display()))?;
+    ControlPlaneStore::open(directory).map_err(|error| {
+        format!("configuration was created but control-plane storage could not initialize: {error}")
+    })?;
     Ok(format!("created {}", path.display()))
 }
 
@@ -173,6 +177,7 @@ mod tests {
         let config = std::fs::read_to_string(directory.join(".conveyor.toml")).unwrap();
         assert!(config.contains("repository = \"owner/repository\""));
         assert!(config.contains("target_branch = \"trunk\""));
+        assert!(directory.join(".conveyor/conveyor.db").is_file());
         std::fs::remove_dir_all(directory).unwrap();
     }
 }

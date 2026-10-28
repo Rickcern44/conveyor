@@ -16,6 +16,78 @@ cargo run -p conveyor-cli --bin conveyor -- --help
 
 ## Workflow commands
 
+### Interactive console
+
+Use the local console when you want a compact operational view and command
+surface rather than a sequence of separate commands:
+
+```sh
+conveyor tui
+```
+
+It lists local sessions and recent audit events, and lets you expand the
+selected session with `Enter`. `j`/`k` moves between sessions and `r` reloads
+local state. Type `/` to open the command palette: it accepts every existing
+Conveyor command without the leading `conveyor`, for example:
+
+```text
+/issue scaffold docs/issues/login.md
+/issue create --title "Add login" --body-file docs/issues/login.md
+/build 70
+/verify --yes
+/pr open 70
+```
+
+The palette sends commands through the same parser, policy checks, and
+confirmation prompts as the ordinary CLI. Conveyor restores the normal terminal
+for command output and consent prompts, then returns to the console.
+
+### Agent event output
+
+ACP-backed commands render compact human updates by default. Use the versioned
+JSONL stream for another local process or a future UI consumer:
+
+```sh
+conveyor --event-format jsonl build 70
+```
+
+Normalized, bounded event summaries are also recorded under
+`.conveyor/events/<issue>.jsonl`. These records include event identity,
+timestamps, issue and ACP-session context, category, and summary; they never
+store raw tool output or full agent transcripts.
+
+### Local control plane
+
+`conveyor init` also creates `.conveyor/conveyor.db`, the local SQLite
+control-plane store. JSON artifacts remain available for inspection and export:
+
+```sh
+conveyor export
+```
+
+Pending human decisions are durable records. Inspect and answer them through
+the CLI today; the local TUI and forthcoming local daemon API will use these
+same records:
+
+```sh
+conveyor decision list
+conveyor decision answer 12 allow_once
+conveyor decision answer 12 denied
+```
+
+Conveyor is intentionally the decision authority. Future phone or desktop
+notifications may alert you about a request, but cannot authorize a GitHub,
+Git, or agent action by themselves.
+
+`conveyord` is the initial local control-plane process. It listens only on the
+repository-local Unix socket `.conveyor/conveyord.sock` and currently exposes
+health and durable-decision operations. It is intentionally narrow while the
+TUI and CLI transition to the shared local API:
+
+```sh
+cargo run -p conveyor-cli --bin conveyord
+```
+
 Initialize a consumer repository with versioned, safe defaults:
 
 ```sh

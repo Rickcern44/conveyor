@@ -9,6 +9,8 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
     about = "A local-first issue delivery workflow"
 )]
 pub struct Cli {
+    #[arg(long, value_enum, global = true, default_value_t = EventFormat::Human)]
+    pub event_format: EventFormat,
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -18,6 +20,7 @@ pub enum Commands {
     Init(InitArgs),
     Doctor,
     Status(StatusArgs),
+    Tui,
     Block(BlockArgs),
     Resume(ResumeArgs),
     Agent(AgentArgs),
@@ -28,6 +31,8 @@ pub enum Commands {
     Review(ReviewArgs),
     Pr(PrArgs),
     Audit(AuditArgs),
+    Export,
+    Decision(DecisionArgs),
 }
 
 #[derive(Debug, Args)]
@@ -113,6 +118,12 @@ pub enum Format {
     Json,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum EventFormat {
+    Human,
+    Jsonl,
+}
+
 #[derive(Debug, Args)]
 pub struct HandoffArgs {
     pub number: u64,
@@ -166,11 +177,39 @@ pub struct AuditArgs {
     pub number: u64,
 }
 
+#[derive(Debug, Args)]
+pub struct DecisionArgs {
+    #[command(subcommand)]
+    pub command: DecisionCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DecisionCommand {
+    List,
+    Answer {
+        id: i64,
+        #[arg(value_parser = ["allow_once", "denied", "cancelled"])]
+        outcome: String,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use clap::Parser;
 
     use super::{Cli, Commands, Format, IssueCommand};
+
+    #[test]
+    fn parses_the_interactive_console_command() {
+        let cli = Cli::try_parse_from(["conveyor", "tui"]).unwrap();
+        assert!(matches!(cli.command, Commands::Tui));
+    }
+
+    #[test]
+    fn parses_global_jsonl_event_output() {
+        let cli = Cli::try_parse_from(["conveyor", "--event-format", "jsonl", "tui"]).unwrap();
+        assert_eq!(cli.event_format, super::EventFormat::Jsonl);
+    }
 
     #[test]
     fn parses_nested_issue_validation_as_typed_arguments() {

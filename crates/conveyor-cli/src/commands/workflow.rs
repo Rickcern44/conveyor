@@ -1,11 +1,17 @@
 //! Shared workflow command handlers pending further command-group extraction.
 #[cfg(feature = "acp")]
+use std::cell::Cell;
+#[cfg(feature = "acp")]
 use std::io::IsTerminal;
 use std::io::{self, Write};
 use std::path::Path;
 use std::process::Command;
 #[cfg(feature = "acp")]
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(feature = "acp")]
 use std::sync::{Arc, Mutex};
+#[cfg(feature = "acp")]
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use conveyor_core::agent_adapter::{CommandTemplate, TemplateContext};
 use conveyor_core::build_plan::{BuildInput, prepare};
@@ -13,6 +19,10 @@ use conveyor_core::build_plan::{BuildInput, prepare};
 use conveyor_core::config::AcpAgentCommand;
 use conveyor_core::config::{Config, ConfirmationAction};
 use conveyor_core::confirmation::{ConfirmationPrompt, Decision, authorize};
+#[cfg(feature = "acp")]
+use conveyor_core::control_plane::ControlPlaneStore;
+#[cfg(feature = "acp")]
+use conveyor_core::event::{AgentEvent as StreamEvent, AgentEventKind, EventContext, EventLog};
 use conveyor_core::evidence::EvidenceReport;
 use conveyor_core::issue_contract::{from_markdown, template as issue_template, validate};
 use conveyor_core::pr_gate::{PrDecision, decide, delivery_summary};
@@ -23,6 +33,9 @@ use conveyor_core::verification::{
     CommandResult, CommandRunner, Outcome, VerificationReport, verify,
 };
 use conveyor_core::workflow::IssueState;
+
+#[cfg(feature = "acp")]
+thread_local! { static JSONL_EVENTS: Cell<bool> = const { Cell::new(false) }; }
 
 #[cfg(feature = "acp")]
 struct AcpRunOutcome {
@@ -44,17 +57,53 @@ enum AgentEvent {
 #[derive(Clone)]
 struct AgentEventRenderer {
     interactive: bool,
+    jsonl: bool,
+    sequence: Arc<AtomicU64>,
+    issue_number: Option<u64>,
+    session_id: Arc<Mutex<Option<String>>>,
+    event_log: Arc<EventLog>,
 }
 
 #[cfg(feature = "acp")]
 impl AgentEventRenderer {
-    fn for_terminal() -> Self {
+    fn for_terminal(issue_number: Option<u64>, directory: &Path) -> Self {
         Self {
             interactive: io::stderr().is_terminal(),
+            jsonl: JSONL_EVENTS.with(Cell::get),
+            sequence: Arc::new(AtomicU64::new(1)),
+            issue_number,
+            session_id: Arc::new(Mutex::new(None)),
+            event_log: Arc::new(EventLog::new(directory)),
         }
     }
 
+    fn set_session_id(&self, session_id: impl Into<String>) {
+        *self
+            .session_id
+            .lock()
+            .expect("ACP session lock is not poisoned") = Some(session_id.into());
+    }
+
     fn emit(&self, event: AgentEvent) {
+        let kind = match &event {
+            AgentEvent::Message(text) => AgentEventKind::AgentText {
+                summary: text.clone(),
+            },
+            AgentEvent::ToolStarted(title) => AgentEventKind::ToolStarted {
+                title: title.clone(),
+            },
+            AgentEvent::ToolUpdated(detail) => AgentEventKind::ToolProgress {
+                summary: detail.clone(),
+            },
+            AgentEvent::Plan(steps) => AgentEventKind::PlanUpdated { steps: *steps },
+            AgentEvent::PermissionRequested(detail) => AgentEventKind::PermissionRequested {
+                summary: detail.clone(),
+            },
+        };
+        if self.jsonl {
+            self.emit_kind(kind);
+            return;
+        }
         if !self.interactive {
             eprintln!("conveyor: ACP event {event:?}");
             return;
@@ -72,30 +121,76 @@ impl AgentEventRenderer {
             }
         }
     }
+
+    fn emit_kind(&self, kind: AgentEventKind) {
+        if self.jsonl {
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis();
+            let id = format!("acp-{}", self.sequence.fetch_add(1, Ordering::Relaxed));
+            let event = StreamEvent::new(
+                EventContext::new(
+                    id,
+                    timestamp,
+                    self.issue_number,
+                    self.session_id
+                        .lock()
+                        .expect("ACP session lock is not poisoned")
+                        .clone(),
+                ),
+                kind,
+            );
+            if let Err(error) = self.event_log.append(&event) {
+                eprintln!("conveyor: could not persist event: {error}");
+            }
+            eprintln!("{}", event.to_jsonl());
+            return;
+        }
+        eprintln!("conveyor: {}", kind.summary());
+    }
 }
 
 #[cfg(feature = "acp")]
 fn approve_acp_permission(
     request: &agent_client_protocol::schema::v1::RequestPermissionRequest,
     renderer: &AgentEventRenderer,
+    directory: &Path,
 ) -> Option<agent_client_protocol::schema::v1::PermissionOptionId> {
     use agent_client_protocol::schema::v1::PermissionOptionKind;
 
-    renderer.emit(AgentEvent::PermissionRequested(format!(
-        "Operation: {}",
-        request
-            .tool_call
-            .fields
-            .title
-            .as_deref()
-            .unwrap_or("agent tool operation")
-    )));
+    let operation = request
+        .tool_call
+        .fields
+        .title
+        .as_deref()
+        .unwrap_or("agent tool operation");
+    let detail = format!("Operation: {operation}");
+    renderer.emit(AgentEvent::PermissionRequested(detail.clone()));
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let decision = match ControlPlaneStore::open(directory)
+        .and_then(|store| store.create_pending_decision("acp_permission", &detail, now, None))
+    {
+        Ok(decision) => decision,
+        Err(error) => {
+            eprintln!("conveyor: could not record ACP permission request; denying it: {error}");
+            return None;
+        }
+    };
     let allow_once = request
         .options
         .iter()
         .find(|option| option.kind == PermissionOptionKind::AllowOnce);
     let Some(option) = allow_once else {
         eprintln!("conveyor: no one-time approval option was offered; permission denied");
+        renderer.emit_kind(AgentEventKind::PermissionDecision {
+            decision: "denied".to_owned(),
+        });
+        let _ = ControlPlaneStore::open(directory)
+            .and_then(|store| store.resolve_decision(decision.id, "denied", now));
         return None;
     };
     let summary = format!(
@@ -103,8 +198,18 @@ fn approve_acp_permission(
         option.name
     );
     if TerminalPrompt.confirm(&summary) {
+        renderer.emit_kind(AgentEventKind::PermissionDecision {
+            decision: "allow_once".to_owned(),
+        });
+        let _ = ControlPlaneStore::open(directory)
+            .and_then(|store| store.resolve_decision(decision.id, "allow_once", now));
         Some(option.option_id.clone())
     } else {
+        renderer.emit_kind(AgentEventKind::PermissionDecision {
+            decision: "denied".to_owned(),
+        });
+        let _ = ControlPlaneStore::open(directory)
+            .and_then(|store| store.resolve_decision(decision.id, "denied", now));
         None
     }
 }
@@ -114,6 +219,7 @@ fn run_acp_agent(
     agent_command: &AcpAgentCommand,
     prompt: &str,
     directory: &Path,
+    issue_number: Option<u64>,
     existing_session_id: Option<&str>,
 ) -> Result<AcpRunOutcome, String> {
     use agent_client_protocol::schema::{
@@ -147,9 +253,11 @@ fn run_acp_agent(
     let directory = directory.to_path_buf();
     let response = Arc::new(Mutex::new(String::new()));
     let notification_response = Arc::clone(&response);
-    let renderer = AgentEventRenderer::for_terminal();
+    let renderer = AgentEventRenderer::for_terminal(issue_number, &directory);
     let notification_renderer = renderer.clone();
     let permission_renderer = renderer.clone();
+    let permission_directory = directory.clone();
+    let connection_renderer = renderer.clone();
     let result = futures::executor::block_on(
         Client
             .builder()
@@ -192,14 +300,16 @@ fn run_acp_agent(
             )
             .on_receive_request(
                 async move |request: RequestPermissionRequest, responder, _connection| {
-                    let outcome = approve_acp_permission(&request, &permission_renderer).map_or(
-                        RequestPermissionOutcome::Cancelled,
-                        |option_id| {
-                            RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
-                                option_id,
-                            ))
-                        },
-                    );
+                    let outcome = approve_acp_permission(
+                        &request,
+                        &permission_renderer,
+                        &permission_directory,
+                    )
+                    .map_or(RequestPermissionOutcome::Cancelled, |option_id| {
+                        RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
+                            option_id,
+                        ))
+                    });
                     responder.respond(RequestPermissionResponse::new(outcome))
                 },
                 agent_client_protocol::on_receive_request!(),
@@ -224,6 +334,12 @@ fn run_acp_agent(
                         .await?
                         .session_id
                 };
+                connection_renderer.set_session_id(session_id.to_string());
+                connection_renderer.emit_kind(if existing_session_id.is_some() {
+                    AgentEventKind::SessionResumed
+                } else {
+                    AgentEventKind::SessionStarted
+                });
                 connection
                     .send_request(PromptRequest::new(
                         session_id.clone(),
@@ -239,8 +355,13 @@ fn run_acp_agent(
     )
     .map_err(|error| format!("ACP agent `{}` failed: {error}", agent_command.name));
     if result.is_ok() {
+        renderer.emit_kind(AgentEventKind::SessionCompleted);
         eprintln!();
         eprintln!("conveyor: ACP agent `{}` completed", agent_command.name);
+    } else {
+        renderer.emit_kind(AgentEventKind::SessionFailed {
+            summary: "ACP agent failed".to_owned(),
+        });
     }
     result.map(|mut outcome| {
         outcome.response = response
@@ -263,10 +384,27 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
-    let arguments = arguments
+    let mut arguments = arguments
         .into_iter()
         .map(|argument| argument.as_ref().to_owned())
         .collect::<Vec<_>>();
+    #[cfg(feature = "acp")]
+    {
+        let jsonl = arguments
+            .windows(2)
+            .find(|pair| pair[0] == "--event-format")
+            .is_some_and(|pair| pair[1] == "jsonl");
+        JSONL_EVENTS.with(|format| format.set(jsonl));
+    }
+    if let Some(index) = arguments
+        .iter()
+        .position(|argument| argument == "--event-format")
+    {
+        if index + 1 >= arguments.len() {
+            return Err("--event-format requires human or jsonl".to_owned());
+        }
+        arguments.drain(index..=index + 1);
+    }
     let Some(command) = arguments.first().map(String::as_str) else {
         return Err(usage().to_owned());
     };
@@ -540,7 +678,13 @@ fn review(arguments: &[String], directory: &Path) -> Result<String, String> {
     if let Some(agent) = configuration.acp_agent(agent_name) {
         #[cfg(feature = "acp")]
         {
-            let _outcome = run_acp_agent(&agent, &packet.to_markdown(), directory, None)?;
+            let _outcome = run_acp_agent(
+                &agent,
+                &packet.to_markdown(),
+                directory,
+                Some(issue_number),
+                None,
+            )?;
             record_audit(directory, issue_number, "run_acp_reviewer", &agent.program)?;
             return Ok(format!(
                 "created review packet: {}; ACP reviewer completed",
@@ -803,7 +947,13 @@ fn build(arguments: &[String], directory: &Path) -> Result<String, String> {
         #[cfg(feature = "acp")]
         {
             let invocation = format!("ACP {}", agent.program);
-            match run_acp_agent(agent, &packet.to_markdown(), directory, None) {
+            match run_acp_agent(
+                agent,
+                &packet.to_markdown(),
+                directory,
+                Some(issue_number),
+                None,
+            ) {
                 Ok(outcome) => {
                     session.record_acp_session(&agent.name, outcome.session_id);
                     (invocation, Some(0), None)
@@ -969,7 +1119,13 @@ fn retry_build(arguments: &[String], directory: &Path) -> Result<String, String>
         #[cfg(feature = "acp")]
         {
             let invocation = format!("ACP {}", agent.program);
-            match run_acp_agent(agent, &packet.to_markdown(), directory, None) {
+            match run_acp_agent(
+                agent,
+                &packet.to_markdown(),
+                directory,
+                Some(issue_number),
+                None,
+            ) {
                 Ok(outcome) => {
                     session.record_acp_session(&agent.name, outcome.session_id);
                     (invocation, Some(0), None)
@@ -1492,7 +1648,13 @@ fn agent(arguments: &[String], directory: &Path) -> Result<String, String> {
     #[cfg(feature = "acp")]
     {
         let mut session = session;
-        let outcome = run_acp_agent(&agent, &prompt.join(" "), directory, Some(&session_id))?;
+        let outcome = run_acp_agent(
+            &agent,
+            &prompt.join(" "),
+            directory,
+            Some(issue_number),
+            Some(&session_id),
+        )?;
         session.record_acp_session(agent_name, outcome.session_id);
         session.record_agent_outcome(format!("ACP {} (resumed)", agent.program), Some(0));
         store.save(&session).map_err(|error| error.to_string())?;
@@ -1739,7 +1901,7 @@ fn adapt_issue(number: &str, arguments: &[String], directory: &Path) -> Result<S
         source
     );
     #[cfg(feature = "acp")]
-    let proposal = run_acp_agent(&agent, &prompt, directory, None)?.response;
+    let proposal = run_acp_agent(&agent, &prompt, directory, Some(issue_number), None)?.response;
     #[cfg(not(feature = "acp"))]
     {
         let _ = (agent, prompt, issue_number, apply, explicit_yes);

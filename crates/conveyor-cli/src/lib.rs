@@ -5,6 +5,7 @@
 
 mod cli;
 mod commands;
+mod daemon;
 
 use clap::Parser;
 
@@ -16,6 +17,14 @@ pub fn main() {
             eprintln!("conveyor: {error}");
             std::process::exit(1);
         }
+    }
+}
+
+/// Starts Conveyor's local Unix-socket control API.
+pub fn daemon_main() {
+    if let Err(error) = daemon::serve(&current_directory()) {
+        eprintln!("conveyord: {error}");
+        std::process::exit(1);
     }
 }
 

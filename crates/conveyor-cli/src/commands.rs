@@ -1,23 +1,55 @@
 //! Parsed command dispatch.
 
 pub(crate) mod audit;
+pub(crate) mod decisions;
 pub(crate) mod sessions;
 pub(crate) mod setup;
+pub(crate) mod tui;
 pub(crate) mod workflow;
 
 use std::path::Path;
 
-use crate::cli::{AgentCommand, Cli, Commands, Format, IssueCommand, PrCommand};
+use conveyor_core::control_plane::ControlPlaneStore;
+
+use crate::cli::{
+    AgentCommand, Cli, Commands, DecisionCommand, EventFormat, Format, IssueCommand, PrCommand,
+};
 
 pub(crate) fn execute(cli: Cli, directory: &Path) -> Result<String, String> {
-    match cli.command {
+    let Cli {
+        command,
+        event_format,
+    } = cli;
+    match command {
         Commands::Init(args) => setup::initialize(&args.repository, &args.target_branch, directory),
         Commands::Doctor => setup::doctor(directory),
         Commands::Status(args) => sessions::status(args.issue, directory),
+        Commands::Tui => tui::run(directory),
         Commands::Block(args) => sessions::block(args.number, &args.reason, &args.owner, directory),
         Commands::Resume(args) => sessions::resume(args.number, &args.to, directory),
         Commands::Audit(args) => audit::read(args.number, directory),
-        command => workflow::run(arguments(command), directory),
+        Commands::Export => ControlPlaneStore::open(directory)
+            .and_then(|store| store.export_json())
+            .map_err(|error| error.to_string()),
+        Commands::Decision(args) => match args.command {
+            DecisionCommand::List => decisions::list(directory),
+            DecisionCommand::Answer { id, outcome } => decisions::answer(id, &outcome, directory),
+        },
+        command => {
+            let mut arguments = arguments(command);
+            arguments.extend([
+                "--event-format".to_owned(),
+                event_format_name(event_format).to_owned(),
+            ]);
+            workflow::run(arguments, directory)
+        }
+    }
+}
+
+fn event_format_name(format: EventFormat) -> &'static str {
+    match format {
+        EventFormat::Human => "human",
+        EventFormat::Jsonl => "jsonl",
     }
 }
 
@@ -33,10 +65,12 @@ fn arguments(command: Commands) -> Vec<String> {
         Commands::Init(_) | Commands::Doctor => {
             unreachable!("setup commands are dispatched directly")
         }
-        Commands::Status(_) | Commands::Block(_) | Commands::Resume(_) => {
+        Commands::Status(_) | Commands::Tui | Commands::Block(_) | Commands::Resume(_) => {
             unreachable!("session commands are dispatched directly")
         }
-        Commands::Audit(_) => unreachable!("audit commands are dispatched directly"),
+        Commands::Audit(_) | Commands::Export | Commands::Decision(_) => {
+            unreachable!("direct commands are dispatched directly")
+        }
         Commands::Agent(args) => match args.command {
             AgentCommand::Continue { number, prompt } => std::iter::once("agent".into())
                 .chain(["continue".into(), number.to_string()])

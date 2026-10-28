@@ -10,11 +10,17 @@ autobins = false
 name = "conveyor"
 path = "src/bin/conveyor.rs"
 
+[[bin]]
+name = "conveyord"
+path = "src/bin/conveyord.rs"
+
 [dependencies]
 conveyor-core = { path = "../conveyor-core" }
 clap = { version = "4.5", features = ["derive"] }
 agent-client-protocol = { version = "2.2", optional = true }
 futures = { version = "0.3", optional = true }
+crossterm = "0.28"
+ratatui = "0.29"
 
 [features]
 default = []
