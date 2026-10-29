@@ -2,9 +2,14 @@
 
 ## Product boundary
 
-Conveyor is a local-first Rust CLI. The first release slice is strictly
-read-only: it may create local configuration through `conveyor init`, but it
-must not create branches, alter GitHub issues, push, or open pull requests.
+Conveyor is a local-first Rust CLI. Read-only operations are the default;
+implemented commands can create local configuration, run agents, change Git and
+GitHub state, and deliver draft PRs with the applicable policy and operator
+confirmation. A draft PR alone is not verified completion. Durable version-bound
+approvals and unattended execution are planned, not current guarantees.
+This product boundary applies to Conveyor's behavior. The coding assistant is
+authorized to create and update GitHub issues for this repository when the user
+requests issue work.
 
 ## Architecture
 
