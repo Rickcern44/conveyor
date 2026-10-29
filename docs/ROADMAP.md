@@ -23,6 +23,30 @@ diffs, screenshots, multiple projects, or task navigation becomes a recurring
 terminal bottleneck. Keep application services and event schemas independent
 of presentation so a later UI can use the same rules.
 
+### Agent and model configuration
+
+Allow each agent role, including the conversational interviewer/planner and
+implementer, to select an agent provider and model independently. Support
+optional provider-specific settings such as reasoning level only where the
+adapter supports them. Preserve compatibility with existing role/provider
+configuration, and define how per-run overrides, defaults, and provider-owned
+settings interact. Resolve the interview/planner role naming during design.
+
+Add OpenCode as a planned ACP provider so an operator can select compatible
+models, including free offerings where available. Credentials stay outside
+repository configuration. Model availability, pricing, and provider behavior
+can change: report unsupported settings and unavailable models clearly, and
+never silently fall back to a different or paid model. Verify model selection
+and capability support with the actual adapter before promising a common
+configuration across providers.
+
+Research and evaluate conversation-model sizing later using representative
+tasks: requirements accuracy, useful questions, tool and structured-operation
+reliability, latency, context needs, operator corrections, and cost. Start with
+an inexpensive candidate and compare it with a stronger reference model; use
+the result to choose defaults rather than assuming a particular model size.
+The controller remains the authority regardless of the selected model.
+
 ### Repository onboarding and reusable blueprints
 
 Onboarding inspects repository facts without running setup: manifests,
@@ -69,6 +93,8 @@ what constitutes a verified result. Existing issue contracts and task packets
 are starting points; section presence alone is not semantic readiness. In
 particular, applying an adapted issue should use the reviewed proposal rather
 than regenerate it. Select the pilot repository, agent, task, and baseline.
+Define the configuration and compatibility contract for role-specific provider
+and model selection; defer model research and final defaults until evaluation.
 
 M1 delivers the detection and reviewed blueprint configuration above, plus a
 dedicated worktree with recorded base revision. Run only explicitly approved
@@ -107,6 +133,10 @@ answer and a scope change are different; only the controller changes state.
 Make the same actions available through the CLI/API. A fresh conversation must
 reconstruct progress from records. Move basic conversation earlier if issue
 entry proves to be the primary obstacle during the first local trial.
+Deliver role-specific agent/model configuration and an OpenCode ACP adapter as
+a focused slice when the conversational role is introduced, or earlier if
+needed for the pilot. Verify actual provider capabilities, clear failures, and
+existing configuration compatibility without silent model or cost fallback.
 
 M5 tests at least five real tasks across a bug, a small feature, and maintenance.
 Record task size, failures, accepted work, attention, rework, and platform
