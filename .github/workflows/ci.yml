@@ -11,18 +11,49 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Classify changes
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - run: python3 -m unittest discover -s scripts -p 'test_ci_docs_only.py'
+      - id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -o pipefail
+          docs_only=false
+          if [ "$EVENT_NAME" = pull_request ]; then
+            docs_only=$(git diff --no-renames --name-only -z "$BASE_SHA...$HEAD_SHA" | python3 scripts/ci_docs_only.py)
+          fi
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+          echo "Documentation-only pull request: $docs_only"
+
   format:
     name: Format
+    needs: changes
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - if: needs.changes.outputs.docs_only != 'true'
+        uses: actions/checkout@v7
+      - if: needs.changes.outputs.docs_only != 'true'
+        uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - run: cargo fmt --check
+      - if: needs.changes.outputs.docs_only != 'true'
+        run: cargo fmt --check
+      - if: needs.changes.outputs.docs_only == 'true'
+        run: echo 'Rust checks skipped for documentation-only pull request.'
 
   rust:
     name: Rust (${{ matrix.features }})
+    needs: changes
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -33,9 +64,15 @@ jobs:
           - features: all-features
             args: --all-features
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - if: needs.changes.outputs.docs_only != 'true'
+        uses: actions/checkout@v7
+      - if: needs.changes.outputs.docs_only != 'true'
+        uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - run: cargo clippy --locked --workspace --all-targets ${{ matrix.args }} -- -D warnings
-      - run: cargo test --locked --workspace ${{ matrix.args }}
+      - if: needs.changes.outputs.docs_only != 'true'
+        run: cargo clippy --locked --workspace --all-targets ${{ matrix.args }} -- -D warnings
+      - if: needs.changes.outputs.docs_only != 'true'
+        run: cargo test --locked --workspace ${{ matrix.args }}
+      - if: needs.changes.outputs.docs_only == 'true'
+        run: echo 'Rust checks skipped for documentation-only pull request.'

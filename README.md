@@ -20,8 +20,10 @@ CI runs these checks on Linux with the stable Rust toolchain, including rustfmt
 and Clippy, on pull requests targeting `main` and pushes to `main`. It can also
 be started manually. The checks are named `Format`, `Rust (default)`, and
 `Rust (all-features)`; a failure appears in the pull request's checks with logs
-for the failing step. Tests use local fixtures and need no agent or provider
-credentials.
+for the failing step. On pull requests containing only `README.md`, `AGENTS.md`,
+or Markdown files under `docs/`, those checks report success with a skip message
+instead of running Rust. Mixed changes, pushes, and manual runs execute all
+checks. Tests use local fixtures and need no agent or provider credentials.
 
 ## Workflow commands
 
