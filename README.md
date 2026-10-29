@@ -9,10 +9,19 @@ Requirements: Rust 1.85 or newer, Git, and the GitHub CLI (`gh`).
 
 ```sh
 cargo fmt --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+cargo test --locked --workspace --all-features
 cargo run -p conveyor-cli --bin conveyor -- --help
 ```
+
+CI runs these checks on Linux with the stable Rust toolchain, including rustfmt
+and Clippy, on pull requests targeting `main` and pushes to `main`. It can also
+be started manually. The checks are named `Format`, `Rust (default)`, and
+`Rust (all-features)`; a failure appears in the pull request's checks with logs
+for the failing step. Tests use local fixtures and need no agent or provider
+credentials.
 
 ## Workflow commands
 
