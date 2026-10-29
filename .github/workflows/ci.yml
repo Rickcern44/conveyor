@@ -17,7 +17,7 @@ jobs:
     outputs:
       docs_only: ${{ steps.classify.outputs.docs_only }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - run: python3 -m unittest discover -s scripts -p 'test_ci_docs_only.py'
@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - if: needs.changes.outputs.docs_only != 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - if: needs.changes.outputs.docs_only != 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -65,7 +65,7 @@ jobs:
             args: --all-features
     steps:
       - if: needs.changes.outputs.docs_only != 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - if: needs.changes.outputs.docs_only != 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
