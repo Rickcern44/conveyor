@@ -1,5 +1,151 @@
 # Conveyor delivery roadmap
 
+## Revised direction — macOS-first closed loop
+
+Conveyor should let one person discuss or define work, approve a bounded task,
+run it, understand what happened, and review the result with evidence. Prove
+that complete loop locally on macOS before investing in a dedicated Linux host.
+The conversational agent investigates, proposes, asks, and explains; the
+deterministic controller owns authoritative state, approvals, checks, limits,
+recovery, and delivery. Interactive and unattended use share that controller.
+
+### Operator interface
+
+Use the TUI as the first operator surface, alongside a complete CLI/API for
+automation. Evolve it from the current dashboard and command dispatcher into a
+conversation, task list, decision inbox, compact live timeline, expandable
+events and output, and reviewable result. Make it possible to understand the
+current stage, agent activity, commands, changed files, checks, and failures.
+Keep event summaries bounded and make detailed output retention configurable.
+
+Evaluate a graphical interface after real use. Reconsider it if reviewing
+diffs, screenshots, multiple projects, or task navigation becomes a recurring
+terminal bottleneck. Keep application services and event schemas independent
+of presentation so a later UI can use the same rules.
+
+### Repository onboarding and reusable blueprints
+
+Onboarding inspects repository facts without running setup: manifests,
+lockfiles, declared toolchains, dev-container files, and service definitions.
+It recommends a blueprint and explains its evidence, missing information, and
+ambiguity. Multiple languages, conflicting versions, and multiple environments
+require an explicit choice. The operator reviews the proposed configuration and
+commands before setup; re-detection proposes a diff and never silently replaces
+accepted choices.
+
+A blueprint supplies reusable defaults for runtimes, versions, setup commands,
+checks, services, environment-variable names, execution mode, and cleanup.
+Repository configuration records the selected blueprint and overrides. Secrets
+remain outside configuration and task packets. Begin with a small native macOS
+blueprint for the pilot; consider existing dev-container configurations when a
+compatible adapter is implemented, rather than inventing a marketplace or
+promising automatic support for every project.
+
+Start one native worker in a dedicated Git worktree. This protects the operator
+checkout from ordinary workspace changes, but it is not a security sandbox: the
+agent retains the macOS user's permissions. Choose and test a stronger execution
+boundary before unattended work is treated as isolated. Native and container
+execution can become options; neither requires a separate physical machine.
+
+### Revised milestones
+
+These product milestones supersede the earlier milestone sequence below. They
+are distinct from existing GitHub milestone names and do not automatically
+rename or close GitHub issues.
+
+| Milestone | Outcome | Exit demonstration |
+| --- | --- | --- |
+| M0 — contract and foundation | Agree on the task, approval, and local product contract | A worked handoff specifies scope, checks, limits, and authority |
+| M1 — repository onboarding | Detect facts and configure a reusable environment | Onboard a real macOS repository and run checks in a worktree |
+| M2 — local closed loop | Implement, verify, and deliver one bounded task | Return a reviewable PR or preserved work with evidence |
+| M3 — durability and visibility | Reconnect to work and understand its progress | Restart safely and recover events, decisions, and outcome |
+| M4 — conversational handoff | Discuss and approve work through the TUI | Go from conversation to result and request changes |
+| M5 — personal pilot | Improve the experience through real use | Measure accepted work, operator attention, rework, and maintenance |
+| M6 — execution and deployment options | Add stronger environments or a dev box when justified | Repeat the proven loop in the selected environment |
+
+M0 updates the PRD and defines task/version/run/session/decision/evidence and
+delivery relationships, approval of exact task content and configuration, and
+what constitutes a verified result. Existing issue contracts and task packets
+are starting points; section presence alone is not semantic readiness. In
+particular, applying an adapted issue should use the reviewed proposal rather
+than regenerate it. Select the pilot repository, agent, task, and baseline.
+
+M1 delivers the detection and reviewed blueprint configuration above, plus a
+dedicated worktree with recorded base revision. Run only explicitly approved
+setup and configured checks. Preserve the operator checkout and explain any
+requirements that detection cannot confidently determine.
+
+Workspace management is part of the local experience. List Conveyor-managed
+worktrees with their task, run, status, last activity, path, and approximate disk
+usage where available; note that shared Git objects and external caches make
+size estimates incomplete. Offer a manual CLI and TUI cleanup action for a
+selected workspace, with a preview and explicit confirmation. Refuse cleanup
+for active runs or workspaces with uncommitted, unpushed, or otherwise
+unpreserved work; explain how to preserve the work first. Restrict cleanup to
+worktrees Conveyor created and owns, never the operator's primary checkout.
+Use Git-aware removal and report reclaimed space only when it can be measured.
+
+M2 delivers a usable foreground, interactive loop: one approved task, one
+agent, configured checks, and a result with changes, revision-bound evidence,
+failures, unresolved questions, and either a draft PR or recoverable work. A
+draft PR and review-ready status are distinct; failed required checks cannot
+be reported as passing. Add bounded attempts and enforceable limits, and
+reconcile delivery retries to avoid duplicate PRs. Do not promise a hard spend
+limit unless the provider supplies a mechanism to enforce it.
+
+M3 moves execution to the daemon, persists task versions, attempts, decisions,
+events, evidence and delivery state in SQLite, and makes CLI and TUI clients of
+the same versioned API. Retain portable exports and migrate legacy sessions.
+Support event replay, cancellation, expiring single-resolution decisions, and
+safe restart reconciliation. Test that disconnecting preserves work, no silent
+approval occurs, and retries cannot duplicate execution or delivery. Include a
+tested execution and credential boundary before unattended operation.
+
+M4 connects a conversational planner to structured controller operations for
+proposals, approved execution, status, changes, and cancellation. A blocker
+answer and a scope change are different; only the controller changes state.
+Make the same actions available through the CLI/API. A fresh conversation must
+reconstruct progress from records. Move basic conversation earlier if issue
+entry proves to be the primary obstacle during the first local trial.
+
+M5 tests at least five real tasks across a bug, a small feature, and maintenance.
+Record task size, failures, accepted work, attention, rework, and platform
+maintenance against a small manual baseline. Use findings to refine the TUI and
+decide whether a graphical client is warranted; the pilot is an initial signal,
+not proof of general productivity gains.
+
+M6 considers a container/dev-container adapter and the Linux dev box after the
+local product is useful. If selected, begin with one controller and worker on
+the box, access over SSH, explicit credentials and mounts, service lifecycle,
+backups, and restore/reboot/interruption drills. Remote runners, multiple
+workers, schedulers, webhooks, chat integrations, notifications, and blueprint
+marketplaces are separate later extensions driven by demonstrated need.
+
+An optional age-based workspace retention policy can follow the manual cleanup
+feature. Configure retention per repository or blueprint and keep automation
+disabled by default. Apply the same ownership and preservation checks at the
+time of deletion, never remove active or unreconciled work, and record a cleanup
+audit event. Define how to determine last activity and handle unreachable
+remotes before enabling automatic removal; age alone is not proof that work is
+safe to discard.
+
+### Next slice
+
+Complete the product and approval contract in M0, then choose the first macOS
+repository and onboarding blueprint. Carry current CI and contract issues
+forward without duplicating them to fit the revised names. The first local loop
+may be interactive; disconnect/reconnect and safe recovery are the next gate,
+not an assumed current capability.
+
+---
+
+## Earlier roadmap (superseded milestone numbering)
+
+The following prior plan is retained as a source of detailed acceptance and
+recovery ideas. Its Linux-first ordering and milestone numbers are superseded by
+the revised direction above; individual details should be reconciled when their
+corresponding revised milestone is specified.
+
 Status: planned; baseline inspected 2026-10-29.
 
 ## Product outcome
