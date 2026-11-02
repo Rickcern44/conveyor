@@ -13,11 +13,17 @@ judgment. The controller owns policy, state, approvals and delivery; agents
 propose and perform bounded work through replaceable adapters. A draft PR is a
 delivery artifact, not proof of verified completion.
 
-The first target is a useful closed loop on macOS for one operator, one existing
-repository and one worker. A Linux dev box, remote runners and multiple workers
-are future deployment options, not prerequisites. Measure accepted work against
-the operator time spent defining, supervising, reviewing and repairing it, plus
-the time spent maintaining Conveyor.
+The first V0 pilot runs locally on the operator's Mac against a planned,
+Swan-like test repository containing a .NET API, React/Vite frontend, and Aspire
+orchestration. Its backend-only task is to implement
+`GET /api/health/details`, returning the application name and version with
+tests. The repository and task have not been provisioned. V0 uses simulated
+delivery and produces a local review packet; it does not prove real GitHub
+behavior or unattended operation. A later real-world trial uses Swan League
+commissioner participation work and is separate from the test pilot. A Linux
+dev box, SSH/reboot validation, and real draft-PR smoke tests are optional later
+work, not prerequisites. Measure accepted work against operator time spent
+defining, supervising, reviewing, and repairing it, plus Conveyor maintenance.
 
 ## Implemented baseline
 
@@ -76,27 +82,51 @@ implemented.
 
 ## Planned lifecycle and outcomes
 
-1. Discuss and define a task using the canonical issue contract. The controller
-   validates the proposal and displays scope, exclusions, checks, actions and
-   limits. Material unanswered questions prevent approval.
-2. The operator explicitly approves the version and configuration snapshot.
-   Execution starts only within that authority; changed terms return to approval.
-3. The controller records the run and supervises the agent. A request outside
-   its authority becomes **awaiting operator**; an external prerequisite may
-   leave it **blocked**. A specific valid decision or resolved prerequisite may
-   allow the same run to resume only if the runtime supports it and the approval
-   is still valid. Otherwise record interruption and start a separately approved
-   attempt as needed.
-4. Verification produces revision-bound evidence. A failed required check means
-   **failed** unless an authorized, bounded repair succeeds. A named waiver is
-   visible as a waiver, not a pass. A draft can exist during verification.
-5. **Review-ready** requires the approved verification contract and delivery
-   evidence; a draft PR alone is insufficient. **Completed** means the agreed
-   verified outcome is accepted by the operator, with delivery state recorded.
-   Failure and cancellation are terminal for that run; a new run can be approved
-   against an appropriate version. Cancellation stops owned work, preserves
-   recoverable artifacts and never implies a successful result. A blocked or
-   awaiting-operator run is not terminal and must not silently resume or approve.
+The desired entry point is `conveyor task create "Task to do"`. A human-facing
+planning agent and operator build the structured spec and execution plan in
+digestible stages: outcome/scope, behavior/questions, verification, then
+execution/authority. The agent summarizes each stage and continues unless
+corrected. During planning it may read code and documentation, but must not
+change code or run checks. It proposes focused tests/checks for inclusion in the
+approved plan. Initially, planning may happen in an external agent; saving and
+resuming an unfinished planning conversation is future work.
+
+After material questions are resolved, the controller presents the full spec
+and plan for one explicit final approval. That approval authorizes the complete
+listed workflow: scoped implementation, the agreed checks, review, and only the
+delivery actions named in the plan. Approval binds the immutable TaskVersion,
+workflow/configuration snapshot, permitted actions, and limits. Any change to
+scope, checks, configuration, or limits requires new approval. After approval,
+clean checks and review proceed automatically without a mandatory human review
+gate. In-scope review findings can use the shared repair attempt, followed by
+fresh verification and review. Pause for a material out-of-scope decision, new
+authority, or a blocker unresolved within approved limits. The operator inspects
+the resulting packet/PR; merge and deployment remain operator decisions.
+
+Runtime permission requests covered by the approved plan may be granted only
+when the controller matches the specific requested operation to that authority.
+Unknown, ambiguous, or out-of-scope requests pause for the operator. Record each
+request and decision; there is no silent blanket permission, and `--yes` is not
+a general bypass.
+
+The V0 workflow is `prepare → implement → verify → review → simulate-deliver`.
+One repair attempt is shared across verification failures and in-scope review
+findings. A changed revision must pass verification and review again. V0 allows
+30 minutes of active execution, excluding human waits when no executor is
+running. Exhaustion returns a truthful failed/blocked result and preserves work.
+
+V0 review-ready means the approved verification and review contract passed for
+the candidate revision and a local simulated-delivery packet was created. The
+packet is not a real PR. Later real delivery requires reconciled PR identity.
+The packet contains proposed PR title/summary, diff, base/target and candidate
+revisions, check results, review findings, unresolved concerns, and a simulated
+delivery identity/idempotency record. Repeatable controller/CI evaluations use
+fresh fixture repositories and deterministic fake agents; separate real-model
+Luna runs measure variable outcomes, time, and available cost. Containers are
+optional. Never inject artificial defects into real delivery.
+Failure and cancellation are terminal for that run; a new run requires approval.
+Cancellation stops owned work and preserves recoverable artifacts. A blocked or
+awaiting-operator run is not terminal and must not silently resume or approve.
 
 The [example contract](example-task-contract.md) walks through these cases.
 
@@ -144,11 +174,13 @@ controller records rather than relying on conversation history.
 Agent roles should independently select a provider and model, with optional
 provider-specific controls only where supported. Preserve compatibility with
 existing configuration and specify precedence for defaults and run overrides.
-OpenCode is a planned ACP provider. Unavailable models and unsupported controls
-must produce clear errors; never silently switch models or incur paid usage as a
-fallback. Evaluate conversational model candidates on representative tasks,
-latency, tool reliability, corrections and cost before choosing defaults. Role
-naming and exact provider capabilities remain design decisions.
+For the pilot, implementation and review are separate role configurations,
+both selecting Luna through Codex ACP. Confirm exact model identifiers and
+adapter support before implementation. If unavailable, fail visibly; never
+silently switch models/providers or incur unapproved cost. OpenCode is a later
+planned ACP provider. Evaluate conversational model candidates on representative
+tasks, latency, tool reliability, corrections and cost before choosing defaults.
+Role naming and exact provider capabilities remain design decisions.
 
 ## Planned workspace management
 
@@ -170,15 +202,18 @@ alone does not establish that work is safe to discard.
 ## Delivery, success and deferred expansion
 
 The [roadmap](ROADMAP.md) is authoritative for sequencing and exit demonstrations.
-Its initial goal is an interactive macOS task-to-verified-result loop, followed
-by durable daemon ownership, reconnect and conversational handoff. A draft PR
-may be created early, but review-ready requires the approved verification
-contract and evidence for the resulting revision. Failed or interrupted work
-must remain inspectable and recoverable; retries reconcile delivery state.
+Its initial goal is a local macOS task-to-simulated-result loop, followed by
+durable daemon ownership, reconnect and conversational handoff. A local packet
+is not a real PR. Real draft-PR delivery is a later explicitly authorized
+validation. Review-ready requires the approved verification/review contract
+and evidence for the resulting revision. Failed or interrupted work must remain
+inspectable and recoverable; retries reconcile delivery state.
 
-Evaluate the product with representative real tasks, measuring accepted work,
-operator effort, rework, failures and maintenance against a manual baseline.
-The pilot repository, runtime, enforceable limits and model defaults remain open
-operator decisions. Stronger container-backed environments, a dedicated dev box,
+Evaluate repeatability with fresh fixture repositories, deterministic scripted/
+fake agents and simulated delivery for CI and controller recovery/idempotency
+tests. Run separate real-model Luna evaluations to measure variable outcomes,
+time and available cost. Never introduce artificial defects into a real
+delivery. The later Swan League commissioner participation task is a distinct
+real-world trial. Stronger container-backed environments, a dedicated dev box,
 remote and multiple workers, scheduling, notifications, webhooks and graphical
 interfaces are later options driven by demonstrated need.
