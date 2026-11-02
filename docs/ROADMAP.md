@@ -1,521 +1,211 @@
-# Conveyor delivery roadmap
-
-## Revised direction — macOS-first closed loop
-
-Conveyor should let one person discuss or define work, approve a bounded task,
-run it, understand what happened, and review the result with evidence. Prove
-that complete loop locally on macOS before investing in a dedicated Linux host.
-The conversational agent investigates, proposes, asks, and explains; the
-deterministic controller owns authoritative state, approvals, checks, limits,
-recovery, and delivery. Interactive and unattended use share that controller.
-
-The first V0 pilot is local on the operator's Mac, using a planned but not yet
-provisioned Swan-like test repository with a .NET API, React/Vite, and Aspire.
-Its backend-only task is `GET /api/health/details` returning application name
-and version, covered by tests. Delivery is simulated into a local review packet;
-this does not prove real GitHub behavior. A later real-world trial uses Swan
-League commissioner participation work and is separate from the test pilot.
-An always-on host, SSH/reboot survival, and real draft-PR smoke tests are
-optional later validations, not prerequisites.
-
-The desired initial command is `conveyor task create "Task to do"`. Planning
-stages outcome/scope, behavior/questions, verification, and execution/authority
-in digestible chunks, summarizing each and continuing unless corrected. The
-planning agent may read code and docs but cannot change code or run checks; it
-proposes focused tests/checks for the final approved plan. Initially, planning
-may use an external agent before integration. Saving and resuming an unfinished
-planning conversation is future work.
-
-### Operator interface
-
-Use the TUI as the first operator surface, alongside a complete CLI/API for
-automation. Evolve it from the current dashboard and command dispatcher into a
-conversation, task list, decision inbox, compact live timeline, expandable
-events and output, and reviewable result. Make it possible to understand the
-current stage, agent activity, commands, changed files, checks, and failures.
-Keep event summaries bounded and make detailed output retention configurable.
-
-Evaluate a graphical interface after real use. Reconsider it if reviewing
-diffs, screenshots, multiple projects, or task navigation becomes a recurring
-terminal bottleneck. Keep application services and event schemas independent
-of presentation so a later UI can use the same rules.
-
-### Agent and model configuration
-
-Allow each agent role, including the conversational interviewer/planner and
-implementer, to select an agent provider and model independently. Support
-optional provider-specific settings such as reasoning level only where the
-adapter supports them. Preserve compatibility with existing role/provider
-configuration, and define how per-run overrides, defaults, and provider-owned
-settings interact. Resolve the interview/planner role naming during design.
-
-Add OpenCode as a planned ACP provider so an operator can select compatible
-models, including free offerings where available. Credentials stay outside
-repository configuration. Model availability, pricing, and provider behavior
-can change: report unsupported settings and unavailable models clearly, and
-never silently fall back to a different or paid model. Verify model selection
-and capability support with the actual adapter before promising a common
-configuration across providers.
-
-Research and evaluate conversation-model sizing later using representative
-tasks: requirements accuracy, useful questions, tool and structured-operation
-reliability, latency, context needs, operator corrections, and cost. Start with
-an inexpensive candidate and compare it with a stronger reference model; use
-the result to choose defaults rather than assuming a particular model size.
-The controller remains the authority regardless of the selected model.
-
-### Repository onboarding and reusable blueprints
-
-Onboarding inspects repository facts without running setup: manifests,
-lockfiles, declared toolchains, dev-container files, and service definitions.
-It recommends a blueprint and explains its evidence, missing information, and
-ambiguity. Multiple languages, conflicting versions, and multiple environments
-require an explicit choice. The operator reviews the proposed configuration and
-commands before setup; re-detection proposes a diff and never silently replaces
-accepted choices.
-
-A blueprint supplies reusable defaults for runtimes, versions, setup commands,
-checks, services, environment-variable names, execution mode, and cleanup.
-Repository configuration records the selected blueprint and overrides. Secrets
-remain outside configuration and task packets. Begin with a small native macOS
-blueprint for the pilot; consider existing dev-container configurations when a
-compatible adapter is implemented, rather than inventing a marketplace or
-promising automatic support for every project.
-
-Start one native worker in a dedicated Git worktree. This protects the operator
-checkout from ordinary workspace changes, but it is not a security sandbox: the
-agent retains the macOS user's permissions. Choose and test a stronger execution
-boundary before unattended work is treated as isolated. Native and container
-execution can become options; neither requires a separate physical machine.
-
-### Revised milestones
-
-These product milestones supersede the earlier milestone sequence below. They
-are distinct from existing GitHub milestone names and do not automatically
-rename or close GitHub issues.
-
-| Milestone | Outcome | Exit demonstration |
-| --- | --- | --- |
-| M0 — contract and foundation | Agree on the task, approval, and local product contract | A worked handoff specifies scope, checks, limits, and authority |
-| M1 — repository onboarding | Detect facts and configure a reusable environment | Onboard a real macOS repository and run checks in a worktree |
-| M2 — local closed loop | Implement, verify, review, and simulate delivery for one bounded task | Return a local review packet or preserved work with revision-bound evidence |
-| M3 — durability and visibility | Reconnect to work and understand its progress | Restart safely and recover events, decisions, and outcome |
-| M4 — conversational handoff | Discuss and approve work through the TUI | Go from conversation to result and request changes |
-| M5 — personal pilot | Improve the experience through real use | Measure accepted work, operator attention, rework, and maintenance |
-| M6 — execution and deployment options | Add stronger environments or a dev box when justified | Repeat the proven loop in the selected environment |
-
-M0 updates the PRD and defines task/version/run/session/decision/evidence and
-delivery relationships, approval of exact task content and configuration, and
-what constitutes a verified result. Existing issue contracts and task packets
-are starting points; section presence alone is not semantic readiness. In
-particular, applying an adapted issue should use the reviewed proposal rather
-than regenerate it. Confirm the planned Swan-like test repository/task before
-provisioning; keep the later Swan League commissioner participation trial
-distinct. The test task changes only the .NET backend and returns application
-name/version from `GET /api/health/details`.
-
-One explicit final approval covers the complete named workflow: scoped
-implementation, agreed checks, review, and only authorized delivery. After
-approval, clean checks/review proceed automatically. One repair attempt is
-shared across verification and in-scope review findings; changed revisions
-return through verification and review. The initial policy is 30 minutes active
-execution, excluding human waits while no executor runs. Pause for material
-scope/out-of-scope decisions, new authority, or blockers unresolved within the
-approved limits. A clean review has no additional human approval gate; the
-operator inspects the resulting packet, while merge/deploy remain operator
-decisions. Runtime permission requests may be granted only when the controller
-matches the specific operation to approved authority; unknown/ambiguous requests
-pause and both request and decision are recorded.
-
-Configure implementation and review separately to use Luna through Codex ACP.
-Confirm exact model identifiers and adapter support before implementation. Fail
-visibly if unavailable; never silently switch models/providers or incur
-unapproved cost. OpenCode is a later ACP provider. Defer model research/defaults
-until evaluation.
-
-M1 delivers the detection and reviewed blueprint configuration above, plus a
-dedicated worktree with recorded base revision. Run only explicitly approved
-setup and configured checks. Preserve the operator checkout and explain any
-requirements that detection cannot confidently determine.
-
-Workspace management is part of the local experience. List Conveyor-managed
-worktrees with their task, run, status, last activity, path, and approximate disk
-usage where available; note that shared Git objects and external caches make
-size estimates incomplete. Offer a manual CLI and TUI cleanup action for a
-selected workspace, with a preview and explicit confirmation. Refuse cleanup
-for active runs or workspaces with uncommitted, unpushed, or otherwise
-unpreserved work; explain how to preserve the work first. Restrict cleanup to
-worktrees Conveyor created and owns, never the operator's primary checkout.
-Use Git-aware removal and report reclaimed space only when it can be measured.
-
-M2 delivers a usable foreground, interactive loop: one approved task, one
-agent, configured checks, and a result with changes, revision-bound evidence,
-failures, unresolved concerns, and a local simulated-delivery packet or
-recoverable work. The packet contains proposed PR title/summary, diff,
-base/target and candidate revisions, checks, review findings, unresolved
-concerns, and delivery identity/idempotency. It is not a real PR. A later
-explicitly authorized smoke test in a dedicated repository can validate real
-GitHub delivery; it is not required for every run. Failed required checks
-cannot be reported as passing. Add bounded attempts and enforceable limits, and
-reconcile real delivery retries before repeating effects. Do not promise a hard
-spend limit unless the provider supplies a mechanism to enforce it.
-
-M3 moves execution to the daemon, persists task versions, attempts, decisions,
-events, evidence and delivery state in SQLite, and makes CLI and TUI clients of
-the same versioned API. Retain portable exports and migrate legacy sessions.
-Support event replay, cancellation, expiring single-resolution decisions, and
-safe restart reconciliation. Test that disconnecting preserves work, no silent
-approval occurs, and retries cannot duplicate execution or delivery. Include a
-tested execution and credential boundary before unattended operation.
-
-M4 integrates staged planning with structured controller operations for
-proposals, approved execution, status, changes, and cancellation. Initially an
-external planning agent can run the same stages; the desired TUI conversation
-uses the shared controller. A blocker answer and a scope change are different;
-only the controller changes state. Make the same actions available through the
-CLI/API. A fresh conversation reconstructs progress from records; saving and
-resuming an unfinished planning conversation is future work. Configure
-implementation/review provider and model selections independently. Use the
-pilot's Codex ACP/Luna selections when supported; add OpenCode ACP later. Verify
-actual provider capabilities, clear failures, and compatibility without silent
-model or cost fallback.
-
-Use fresh fixture repositories per run with deterministic scripted/fake agents
-and simulated delivery for repeatable CI, controller recovery, and idempotency
-tests; containers are optional. Separately run real-model Luna evaluations to
-measure variable outcomes, elapsed time, operator attention, and available cost.
-Never introduce artificial defects into real delivery. M5 can test at least five
-real tasks across a bug, small feature, and maintenance, recording task size,
-failures, accepted work, attention, rework, and platform maintenance against a
-small manual baseline. The later Swan League commissioner participation trial
-is separate from the Swan-like test fixture. Use findings to refine the TUI and
-decide whether a graphical client is warranted; a small pilot is not proof of
-general productivity gains.
-
-M6 considers a container/dev-container adapter and the Linux dev box after the
-local product is useful. If selected, begin with one controller and worker on
-the box, access over SSH, explicit credentials and mounts, service lifecycle,
-backups, and restore/reboot/interruption drills. Remote runners, multiple
-workers, schedulers, webhooks, chat integrations, notifications, and blueprint
-marketplaces are separate later extensions driven by demonstrated need.
-
-An optional age-based workspace retention policy can follow the manual cleanup
-feature. Configure retention per repository or blueprint and keep automation
-disabled by default. Apply the same ownership and preservation checks at the
-time of deletion, never remove active or unreconciled work, and record a cleanup
-audit event. Define how to determine last activity and handle unreachable
-remotes before enabling automatic removal; age alone is not proof that work is
-safe to discard.
-
-### Next slice
-
-Complete the product and approval contract in M0, confirm/provision the planned
-Swan-like macOS fixture repository and health-details task, then onboard it with
-a reviewed blueprint. Carry current CI and contract issues forward without
-duplicating them to fit the revised names. The first local loop may be
-interactive; disconnect/reconnect and safe recovery are a later gate, not an
-assumed current capability.
-
----
-
-## Earlier roadmap (superseded milestone numbering)
-
-The following prior plan is retained as a technical reference for durable task
-and run state, step attempts, revision-bound evidence, bounded recovery,
-idempotent delivery when real delivery is enabled, and legacy compatibility.
-Its Linux-first ordering, pilot/repository assumptions, human-review gates,
-runtime-permission behavior, and first-pilot real-PR/host demonstrations are
-superseded by the revised direction above; do not treat them as current exit
-criteria. Where those sections conflict, the revised pilot and approval policy
-above governs.
-
-Status: planned; baseline inspected 2026-10-29.
-
-## Product outcome
-
-Conveyor is a personal software factory: discuss a change, approve a bounded
-task, leave it running, and return to a result that is easy to review. Success
-means more useful work accepted with less operator attention, including time
-spent maintaining Conveyor.
-
-The conversational agent investigates, proposes tasks, asks focused questions,
-and explains results. The deterministic controller owns authoritative state,
-approvals, execution limits, verification, recovery, and delivery. Execution
-agents perform bounded work through replaceable adapters.
-
-The first release supports one existing repository and one execution worker.
-Rust, ACP, the CLI, and the existing TUI remain the foundation. Interactive and
-unattended operation use the same application services and policies.
-
-## Current baseline
-
-Implemented foundations:
-
-- Issue-contract validation, task/review packets, workflow transitions, and
-  repository configuration.
-- Direct-command and optional ACP agent adapters; Git/GitHub draft-PR delivery.
-- Local JSON sessions, audit records, verification reports, and review packets.
-- Bounded ACP event summaries in JSONL and SQLite.
-- SQLite migrations and pending-decision storage.
-- A TUI session/activity dashboard and slash-command dispatch.
-- A repository-local daemon socket with health and decision operations.
-
-Important gaps:
-
-- Sessions remain JSON records; SQLite does not yet own execution state.
-- The CLI owns agent execution; the daemon does not supervise runs or recover
-  them. The TUI returns to ordinary terminal output while commands execute.
-- ACP permissions still wait on a terminal prompt. Stored decisions are not yet
-  an asynchronous channel back to a waiting agent, and expiry is not enforced.
-- Sessions are associated with issues rather than versioned tasks and distinct
-  execution attempts. Approval is not bound to an immutable task version.
-- Builds use the current checkout; dedicated worker environments and resource
-  limits are not implemented.
-- Initial draft PRs can precede verification. Direct adapters do not yet have
-  normalized event parity with ACP.
-
-These foundations are reusable, but a schema or socket endpoint alone does not
-count as a delivered execution capability.
-
-## Deployment assumptions
-
-- Develop and prove the workflow locally before installing it on the dev box.
-- First dev-box target: Ubuntu Server LTS, one worker, and remote model providers
-  through an authenticated agent runtime. Confirm hardware, OS, and repository
-  requirements during M0; provision only when access is available.
-- Run controller and worker on the dev box. Access the CLI/TUI over SSH; closing
-  SSH must not stop approved work. Keep the control API on a local Unix socket.
-- Retain repository-local SQLite initially. Multi-repository aggregation and a
-  laptop controller dispatching to another host are later extensions.
-- Begin with one supported ACP runtime, while preserving the direct-adapter
-  interface and current CLI paths.
-- Hardware provisioning and account authentication are explicit operator steps;
-  never put credentials into repository configuration or task artifacts.
-
-## Milestone sequence
-
-| Milestone | Delivered capability | Exit demonstration |
-| --- | --- | --- |
-| M0 | Agreed handoff and first deployment contract | One real pilot task and a documented execution policy |
-| M1 | Durable tasks, attempts, approvals, and events | Restart reconstructs the same task and run state |
-| M2 | Background execution and durable decisions | Disconnect, reconnect, and answer a pending request |
-| M3 | Dedicated worker and enforced limits | One bounded run preserves work through interruption |
-| M4 | Verification, repair, and reviewable delivery | A real task produces a PR with revision-bound evidence |
-| M5 | Dev-box installation and operations | SSH disconnect, reboot, and backup/restore drills pass |
-| M6 | Conversational handoff in the TUI | Discuss, approve, execute, and request changes in one surface |
-| M7 | Personal pilot and release decision | Repeated real use shows useful output and measured effort |
-
-The sequence is dependency-driven, not a calendar commitment. M5 host preparation
-can proceed after M0; unattended operation requires M1–M4. Each milestone closes
-only when its exit demonstration passes.
-
-## M0 — define the handoff contract
-
-Deliverables:
-
-- Update the PRD around the solo operator and the discuss → define → approve →
-  execute → verify → review workflow. Reconcile older first-slice language in
-  contributor guidance with the implemented product.
-- Specify Task, TaskVersion, Run, AgentSession, Decision, Evidence, and Delivery.
-  One task can have multiple runs, and a run can use multiple agent sessions.
-- Specify approval bound to the task version, configuration snapshot, permitted
-  actions, and limits. Changed scope requires a new version and approval.
-- Define terminal outcomes, operator questions, cancellation behavior, and what
-  constitutes verified completion. A draft PR alone is not completion.
-- Select one consumer repository, one agent runtime, and a small representative
-  issue. Record the dev-box inventory, access method, and required build tools.
-
-Exit gate: an example approved task includes scope, exclusions, acceptance
-criteria, verification commands, delivery authority, time/retry limits, and
-clear reasons to interrupt the operator. Unresolved choices become explicit
-requirements rather than implicit agent decisions.
-
-## M1 — establish durable task and run state
-
-Deliverables:
-
-- Migrate SQLite to store task versions, runs, agent-session links, approval
-  snapshots, transitions, blockers, evidence references, and delivery attempts.
-- Import existing JSON sessions with explicit legacy identity; preserve JSON
-  exports and artifacts. Define SQLite as authoritative for new managed runs
-  rather than maintaining two competing authoritative stores.
-- Commit transitions and their event records transactionally; retain stable
-  event IDs and add task/run identity plus ordered reconnect cursors.
-- Use an outbox or equivalent reconciliation record for Git/GitHub mutations;
-  process failure must not imply a mutation never happened.
-- Enforce decision expiry and single resolution, bound to the relevant run and
-  request. Export tasks, runs, decisions, events, and configuration snapshots.
-
-Exit gate: close and reopen the store, recover identical state, reject stale or
-duplicate decisions, and replay events without duplicated effects. Migration
-and export round trips have meaningful automated coverage.
-
-## M2 — make the daemon own execution
-
-Deliverables:
-
-- Extract application operations from terminal-specific command handlers.
-  CLI, TUI, and future conversational tools call the same operations.
-- Introduce a versioned local API for submit/start, status, event subscription,
-  decisions, cancellation, and results, with structured errors and request IDs.
-- Have the daemon supervise agent processes and persist lifecycle transitions.
-  ACP permission/elicitation requests wait on durable decisions rather than
-  terminal input. Unsupported direct-adapter interaction fails explicitly.
-- Reconnect clients from an event cursor; render compact expandable activity
-  and a decision inbox in the TUI. CLI parity remains available for automation.
-- On daemon restart, reconcile recorded runs with processes and workspaces.
-  Mark interrupted work accurately; resume only where the runtime supports it.
-
-Exit gate: start an approved run, close the TUI, reconnect from the CLI, answer
-its permission request, and observe the same outcome in both clients. A daemon
-crash creates neither silent approval nor a second active execution.
-
-## M3 — deliver one bounded worker environment
-
-Deliverables:
-
-- Create a dedicated checkout/worktree per run; record base revision,
-  environment configuration, workspace location, and produced revision.
-- Enforce one active worker, wall-clock and repair-attempt limits, cancellation,
-  and termination of the owned process group. Add memory/CPU limits for the
-  Linux execution environment where supported.
-- Define controller/worker credentials and execution boundaries. A worktree is
-  checkout separation, not a security sandbox. For unattended use, select and
-  test an OS-user/container boundary appropriate to the pilot repository;
-  keep delivery credentials and host control sockets outside worker access.
-- Record usage/cost when the runtime provides it. Do not promise a hard spend
-  limit without an enforceable provider/runtime mechanism; report unavailable
-  accounting explicitly and enforce the available time/attempt limits.
-- Preserve patches and evidence on failure. Make workspace cleanup deliberate
-  and retention configurable.
-- Complete required normalized lifecycle/outcome event parity for direct and
-  ACP adapters, documenting runtime-specific limitations.
-
-Exit gate: a task cannot alter the operator checkout, exceed its enforceable
-limits, or leave an untracked owned process after cancellation. Killing the
-agent preserves recoverable work and records a truthful outcome.
-
-## M4 — return verified, reviewable results
-
-Deliverables:
-
-- Run controller-selected checks from the approved verification contract;
-  agents cannot declare a failed check successful or silently weaken criteria.
-- Bind evidence to the exact resulting revision. Treat repository build/test
-  commands as untrusted execution and apply the worker boundary to them too.
-- Support a bounded implement → verify → repair loop. Exhausted limits produce
-  a useful failed/blocked result, not unbounded retries.
-- Distinguish draft-created, verifying, blocked/failed, and review-ready states.
-  CI may be a gate, but the controller must observe its result for the relevant
-  revision before claiming review-ready.
-- Deliver the PR link, change summary, acceptance-criteria evidence, check
-  results, unresolved concerns, and preserved artifacts. Explicit waivers remain
-  visible and distinct from passing verification.
-- Reconcile remote branches and PR identity before retrying delivery; retain
-  recorded approval for only the actions it actually authorized.
-
-Exit gate: complete one real pilot task. A failed required check prevents
-review-ready status. Interrupt delivery after a remote mutation and retry;
-reconciliation returns the existing PR rather than creating another one.
-
-## M5 — install and prove the dev box
-
-Deliverables:
-
-- Document the host setup, supported agent/runtime versions, repository tools,
-  authentication steps, and a repeatable binary install/update procedure.
-- Install the daemon as a systemd-managed service with an appropriate service
-  identity, restart policy, local socket permissions, state paths, and logs.
-  Choose a credential mechanism that works without an interactive login.
-- Run one worker with the M3 isolation and resource limits. Install supporting
-  repository services only where the pilot needs them.
-- Provide health/doctor checks for agent authentication, GitHub delivery access,
-  disk space, build tools, and worker readiness.
-- Document safe service stop, update, compatible rollback, and schema migration
-  recovery. Back up SQLite using a consistent snapshot method; include needed
-  configuration and artifacts, and test restoration on a separate directory.
-- Keep remote access through SSH initially. A TUI running on the dev box over
-  SSH is sufficient; distributed runner registration is not a prerequisite.
-
-Exit drills, with recorded results:
-
-1. From the laptop, SSH in, approve a pilot task, disconnect, and reconnect to
-   its completed result or an accurately recorded request for attention.
-2. Reboot during execution; the service starts and reconciles interrupted work
-   without duplicate execution, delivery, or lost approval boundaries.
-3. Kill an agent, exhaust a time limit, and expire a decision; each preserves
-   useful work and produces the expected outcome.
-4. Restore a backup to a separate location and inspect tasks and evidence.
-5. Re-run the M4 delivery interruption drill on the installed host.
-
-Passing these drills marks the first unattended dev-box release, even before
-the conversational interface is complete.
-
-## M6 — add conversational handoff to the TUI
-
-Deliverables:
-
-- Add a persistent project conversation alongside task cards, an attention
-  inbox, expandable activity, and a compact result view.
-- Give the planner structured operations for proposing/versioning tasks,
-  requesting approved execution, reading status, requesting changes, and
-  cancelling runs. Validate every operation in the controller.
-- Start by translating existing issues and conversation into the same handoff
-  contract; support explicit scope review before execution.
-- Distinguish answers to blockers from scope changes. Neither conversation
-  history nor agent assertions are authoritative execution state.
-- Expose the same capabilities through CLI/API paths. Slash commands provide
-  predictable navigation and actions without independent policy logic.
-
-Exit gate: discuss a small change, inspect its proposed contract, approve it,
-disconnect, and return to the result. Request changes as another bounded run.
-A fresh conversation reconstructs progress from stored records.
-
-## M7 — validate personal productivity
-
-Use the dev box for a pilot of at least five real tasks spanning a bug fix, a
-small feature, and a maintenance change. Record task size and failed attempts
-as well as accepted work.
-
-Measure accepted tasks, operator time spent defining/supervising/reviewing/
-repairing, task duration, interruptions, rework/regressions, and Conveyor
-maintenance time. Compare with a small recorded sample of the existing manual
-workflow. Set acceptable thresholds in M0; a five-task pilot is an initial
-signal rather than proof of general productivity gains.
-
-Exit gate: document observed benefit, failure patterns, and a deliberate
-decision to improve reliability, expand the pilot, or add capacity. Retain
-human review and approval of merge/deployment.
-
-## Deferred expansion
-
-After the unattended workflow and pilot are useful:
-
-- Authenticated remote runners, a laptop-hosted controller, and multiple hosts.
-- Multiple repositories/workers with scheduling and resource accounting.
-- Optional ntfy notifications pointing back to authoritative decisions/results.
-- Timers, GitHub webhook intake, deduplication, and reconciliation.
-- Additional chat integrations, browser UI, and richer editing capabilities.
-
-These remain valid extensions of the same task/run API. They are not required
-to prove the first personal dev-box workflow.
-
-## Implementation discipline
-
-- Deliver each milestone in reviewable slices with behavior-level tests for
-  policy, persistence, retries, and failure recovery; run repository checks.
-- Use fake agents and GitHub/Git fixtures for deterministic interruption tests,
-  then repeat the critical drills against the real pilot environment.
-- Preserve bounded event summaries and avoid secret-bearing transcripts.
-- Approval applies only to recorded scope and actions. `--yes` never grants
-  future agent permissions; notifications and external triggers grant none.
-- Review required permissions and verification on every new task version.
-- Keep status truthful: planned, running, interrupted, blocked, failed, and
-  review-ready have distinct meanings. A daemon restart need not resume an
-  agent conversation automatically to count as safe recovery.
-
-## Next implementation slice
-
-Begin M0 with the PRD and a concrete example handoff contract, then implement
-the M1 task/version/run model and migration tests. This supersedes the previous
-plan to mirror the existing issue-session shape into SQLite unchanged.
+# Conveyor delivery plan
+
+Status: proposed narrow validation, 2026-11-02. Supersedes the earlier M0–M7
+sequence. The [PRD](PRD.md) is the target contract; README describes current
+behavior. These slices are planned, not implemented guarantees.
+
+## First outcome
+
+Run the first V0 pilot locally on the operator's Mac against a planned,
+Swan-like fixture repository (.NET API, React/Vite, Aspire). Its backend-only
+task is `GET /api/health/details` returning the application name and version,
+covered by tests. This repository and task have not been provisioned. The pilot
+uses a local simulated-delivery packet, not a real GitHub branch or PR. A later
+real-world trial uses Swan League commissioner participation work and remains
+distinct from this test pilot. An always-on host, SSH/reboot survival, and real
+draft-PR smoke tests are optional future validations, not V0 prerequisites.
+
+The desired entry point is `conveyor task create "Task to do"`. A human-facing
+planning agent stages outcome/scope, behavior/questions, verification, and
+execution/authority in digestible chunks, summarizes each stage, and continues
+unless corrected. It proposes focused checks but does not change code or run
+checks during planning. One final explicit approval binds the complete workflow.
+The interaction is planned; initial development may use an external planning
+agent before embedding this flow. Saving/resuming planning conversations is
+future work.
+
+## Reuse and change
+
+| Existing foundation | Treatment in this validation |
+| --- | --- |
+| Issue validation and task/review packets | Reuse as spec intake and step inputs; add immutable spec identity |
+| Workflow labels and JSON sessions | Preserve legacy commands; new run state is authoritative in SQLite, labels are projections |
+| SQLite events and decisions | Extend with runs, step attempts, artifact refs, version bindings, and decision enforcement |
+| ACP and direct adapters | Choose one supported runtime for the proof; retain interfaces without requiring new parity work |
+| CLI-owned agent execution | Extract shared application operations and move managed runs into daemon supervision |
+| Verification, Git/GitHub delivery | Reuse adapters behind revision-bound gates and reconciliation records |
+| TUI and daemon socket | Add only run inspection/control needed by the proof; plain-text CLI first |
+
+New managed runs use the new contract. Existing build/verify/review paths retain
+their documented behavior until deliberately migrated; do not silently confer
+new guarantees on them. Migration preserves legacy inspection/export without
+requiring a fabricated historical approval.
+
+## V0 — freeze the local simulated pilot contract
+
+Use the small Swan-like test repository and backend-only health-details task
+described above. Confirm/provision them before implementation; they are not
+assumed to exist. The task returns application name and version from
+`GET /api/health/details` and includes tests. Keep React/Vite and Aspire changes
+out of scope unless the operator approves a revised spec. Swan League's
+commissioner participation work is a later real-world trial, not the fixture task.
+
+Use Codex through ACP with Luna for both implementation and review in separately
+configurable role selections. Confirm exact model identifiers and adapter
+support before implementing the pilot. Missing support is a visible preflight
+failure; never silently switch provider/model or incur unapproved cost. OpenCode
+is a possible later ACP provider.
+
+Record the base revision, accepted behavior/response contract, approved test
+commands, review criteria, local execution authority, and simulated delivery
+outputs. One repair attempt is shared across failed checks and in-scope review
+findings. Allow 30 minutes of active execution, excluding human waits when no
+executor is running. A changed revision returns through verification and review.
+Stop truthfully and preserve artifacts when the repair or time budget is spent.
+
+Simulated delivery creates a local packet containing proposed PR title/summary,
+diff, base/target and candidate revisions, check results, review findings,
+unresolved concerns, and a simulated delivery identity/idempotency record. It
+must not be reported as evidence of real GitHub behavior. A clean review does
+not require an additional human approval; the operator reviews the completed
+packet afterward, while merge/deploy remain operator decisions. Runtime
+permission requests are granted only if the controller matches the specific
+operation to the approved plan; unknown or ambiguous requests pause.
+
+Exit: the example contract and resolved plan let an operator predict every
+transition, authority, limit, pause condition, and artifact. The test repository,
+task, model IDs, and ACP support are confirmed before execution; unresolved
+choices are visible rather than delegated implicitly. V0 does not require a
+remote host, disconnection survival, a live GitHub mutation, or a real PR.
+
+## V1 — persist and inspect a run with step attempts
+
+Implement the minimum domain model and SQLite migrations for immutable spec and
+resolved workflow versions, run/configuration approval, step attempts, artifacts,
+decisions, and ordered events. Keep transitions deterministic in conveyor-core.
+Commit state changes and events transactionally. Validate overrides before
+approval; pin the resolved workflow so edits only affect future runs.
+
+Use a fresh fixture repository per run and deterministic scripted/fake agents to
+advance through the fixed workflow, fail a verification or review attempt,
+consume the shared repair allowance, simulate delivery, and reconstruct the
+result after reopening the store. Define read-only run
+list/detail/event/result operations with plain text and JSON output; final CLI
+spelling is an implementation choice. Containers are optional.
+
+Exit: a fresh CLI renders every attempt and its artifacts without the original
+process. Failed checks cannot advance the run, exhausted repairs stop it, and
+spec/workflow changes cannot mutate an approved run. Reject stale/duplicate
+operator decisions. Legacy sessions remain distinguishable and inspectable.
+
+## V2 — execute one durable background worker
+
+Move managed execution into conveyord through shared application services and a
+minimal versioned local API: submit/start, inspect, decide, cancel, and explicitly
+retry interrupted work. Keep the Unix socket local. Reuse existing packet and
+agent adapters for the selected Codex ACP/Luna role configurations. Run the
+initial worker locally on the Mac; do not make an always-on host a prerequisite.
+
+Prepare a dedicated workspace, record base/environment, and apply the chosen
+local worker boundary. Enforce one active worker, the approved 30-minute active
+execution limit and shared repair allowance, owned process cancellation, and
+durable permission requests. Match a runtime permission request to the exact
+approved operation before granting; unknown/ambiguous requests wait for the
+operator. Keep controller/delivery credentials out of the worker. Artifact
+retention must preserve failed work.
+
+On restart, reconcile owned processes before dispatching another attempt. Resume
+only supported sessions; otherwise record interruption and expose a deliberate
+retry. A pending decision must survive disconnect/restart without silent approval.
+
+Exit: start from CLI, disconnect the client, reconnect, answer a pending decision,
+and observe the same run. Kill the daemon and verify no duplicate agent starts.
+Cancel/timeout the worker and confirm owned processes stop and work is preserved.
+Use fake executors for fault injection before running the supported real agent.
+
+## V3 — gate results and simulate delivery locally
+
+Connect the step executors to existing verification and review-packet adapters.
+Verify the candidate revision within the worker boundary. Map acceptance
+criteria to evidence and resolve any required subjective decisions during
+planning, before final approval. Review-agent findings within scope may consume
+the shared repair allowance; a material scope change or new authority pauses for
+operator approval. Changed revisions invalidate later evidence. Required-check
+waivers produce a distinct qualified outcome.
+
+Persist simulated delivery intent and idempotency identity; generate the local
+review packet with proposed PR title/summary, diff, base/target and candidate
+revisions, checks, review findings, unresolved concerns, and delivery identity.
+Render the complete run timeline, attempts, decisions, artifact paths, and next
+action in text. TUI reuse is optional and must use the same operations.
+
+Exit: an approved local spec reaches a simulated-delivery packet with passing
+evidence for its candidate revision. A required failure prevents review-ready;
+a fixture failure proves the one-repair route across verification and review.
+Repeated simulated delivery is idempotent. Exhausted limits yield a useful
+failed/blocked result. No real GitHub mutation is needed to claim this gate.
+
+## V4 — optional real-delivery and host validation
+
+After the local workflow is useful, the operator may authorize a real GitHub
+smoke test in a dedicated repository and/or select an always-on host for
+deployment validation. Neither is required for V0 or local simulated delivery.
+If a host is selected, document install/update, runtime versions, authentication,
+local socket access, logs, health checks, artifact paths, and a consistent
+SQLite-plus-artifacts backup/restore procedure. Use SSH only for host validation.
+A remote API, laptop controller, and new UI are unnecessary.
+
+For an authorized real-delivery smoke test, record actual branch/PR identity and
+reconciliation evidence. Do not run it on every pilot or imply simulated delivery
+proves GitHub behavior. For optional host validation, record these demonstrations:
+
+1. Approve a real run over SSH, close the laptop, and return to a result or a
+   durable attention request. The box remains powered and owns execution.
+2. Restart the daemon and reboot the host during execution. Reconcile existing
+   effects, preserve history, and expose interrupted work honestly; automatic
+   agent resumption is not required.
+3. Answer a pending decision after reconnect; reject an expired decision.
+4. Repeat cancellation, timeout, failed verification, and interrupted-delivery
+   drills against the installed environment.
+5. Restore a consistent backup into a separate location and inspect the run and
+   referenced artifacts without accidentally executing restored work.
+
+Exit: if undertaken, the selected validation has recorded outcomes and no
+unexplained active processes, missing required artifacts, or duplicate
+deliveries. This is optional technical evidence, not a prerequisite for the
+local pilot and not proof of general productivity or a production platform.
+
+## V5 — decide whether further composition earns its cost
+
+Use fresh fixture repositories with deterministic fake agents and simulated
+delivery for repeatable CI and controller recovery/idempotency evaluations.
+Separately run real-model Luna evaluations to measure variable outcomes, elapsed
+time, operator time/interventions, repair/review findings, and available usage
+cost. Define baseline and success threshold before reviewing outcomes. Containers
+are optional. Never insert an artificial defect into a real delivery.
+
+After the test-repository pilot, a separate real-world trial may use Swan League
+commissioner participation work. Do not conflate that task or its outcomes with
+the Swan-like test fixture. Record failures as well as successes; a small number
+of runs is an initial signal, not a statistically reliable claim.
+
+Exit: document whether to continue, simplify, or adopt another tool. Expand only
+when runs expose a repeated unmet need. Keep learning outcomes separate from
+productivity results. The next workflow variation should come from a real task;
+prove that a validated override suffices before adding arbitrary steps or graphs.
+
+## Implementation discipline and immediate next slice
+
+For production changes, write failing behavior tests first, implement the smallest
+slice, and run fmt, workspace Clippy with warnings denied, and workspace tests as
+required by AGENTS.md. Test recovery with fake agents and local Git/GitHub fixtures,
+then repeat critical demonstrations with the selected runtime and host. Avoid
+secret-bearing transcripts. `--yes` is never a policy bypass or blanket permission
+for later agent actions. Current documentation work changes no runtime behavior.
+
+Next: confirm/provision V0's local test repository and task, confirm model IDs and
+ACP support, then implement V1's spec/workflow/run/step-attempt records,
+transition rules, and text inspection using deterministic fake agents. Do not
+start with a generic engine, embedded planner, or TUI redesign. Always-on-host,
+SSH/reboot, and real-GitHub validation remain later optional gates; claim those
+guarantees only after their own demonstrations pass.

@@ -1,219 +1,229 @@
 # Conveyor product requirements
 
-Status: working contract, 2026-10-29. The [roadmap](ROADMAP.md) defines the
-sequence and exit demonstrations; this document distinguishes current behavior
-from requirements that have yet to be enforced.
+Status: proposed validation contract, 2026-11-02. The [delivery plan](ROADMAP.md)
+defines implementation slices and exit demonstrations. All requirements below
+are planned unless explicitly identified as implemented.
 
-## Outcome and boundary
+## Product outcome
 
-Conveyor is a local-first personal software factory for a solo operator: discuss
-a change, define and approve a bounded task, execute it, verify the result and
-return a reviewable delivery. The operator retains merge and deployment
-judgment. The controller owns policy, state, approvals and delivery; agents
-propose and perform bounded work through replaceable adapters. A draft PR is a
-delivery artifact, not proof of verified completion.
+Conveyor runs a human-approved software-change specification through a durable,
+inspectable workflow. The human develops the spec with a planning agent before
+execution. Each workflow step consumes explicit inputs, produces artifacts, and
+hands off only when controller-enforced criteria are satisfied. The operator
+returns to a reviewable result or an accurate explanation of where work stopped;
+real PR delivery is a later authorized stage.
 
-The first V0 pilot runs locally on the operator's Mac against a planned,
-Swan-like test repository containing a .NET API, React/Vite frontend, and Aspire
-orchestration. Its backend-only task is to implement
-`GET /api/health/details`, returning the application name and version with
-tests. The repository and task have not been provisioned. V0 uses simulated
-delivery and produces a local review packet; it does not prove real GitHub
-behavior or unattended operation. A later real-world trial uses Swan League
-commissioner participation work and is separate from the test pilot. A Linux
-dev box, SSH/reboot validation, and real draft-PR smoke tests are optional later
-work, not prerequisites. Measure accepted work against operator time spent
-defining, supervising, reviewing, and repairing it, plus Conveyor maintenance.
+The first V0 pilot runs locally on the operator's Mac, against a small,
+Swan-like test repository containing a .NET API, React/Vite frontend, and
+Aspire orchestration. Its representative task changes only the backend:
+implement `GET /api/health/details` to return the application's name and
+version, with tests. The repository and task are planned and have not been
+provisioned. The pilot uses simulated delivery and produces a local review
+packet; it does not prove real GitHub delivery or unattended operation. A later
+real-world trial uses Swan League commissioner participation work and is a
+separate stage. Running on an always-on host, SSH/reboot validation, and
+real-draft-PR smoke tests are optional later work, not prerequisites for V0.
 
-## Implemented baseline
+The value being tested is less operator supervision and easier recovery and
+review. Learning Rust and agent behavior is a separate benefit, not evidence of
+productivity. Merge and deployment remain operator decisions.
 
-The Rust CLI and core validate issue contracts, create task and review packets,
-manage configured workflow transitions, and use direct command and optional ACP
-adapters. The CLI supports issue authoring/adaptation, local sessions, audit
-records, verification reports and draft-PR delivery. The TUI displays sessions
-and dispatches commands. SQLite stores events and pending decisions; a local
-Unix-socket daemon exposes health and decision operations. README documents the
-current commands and consent prompts. Current builds use the operator checkout,
-and may create a draft before local verification or review. Verification can
-post a PR comment with consent. The explicit `pr open` path requires passing
-configured checks or a named waiver. These features do not yet constitute an
-unattended, version-bound execution service.
+## Implemented baseline and gaps
 
-Read-only commands are the default. State-changing commands follow their
-configured policy and confirmation rules; `--yes` is explicit consent to the
-command's disclosed actions, not a policy bypass or consent to later agent
-permission requests. Issue creation or replacement, branch and label changes,
-push, draft-PR creation and PR comments require the applicable operator
-confirmation. An agent cannot grant itself authority. Merge and deploy remain
-operator decisions and are not automated by this contract. A waiver is a named
-operator decision and is recorded distinctly from a passing check.
+The existing CLI/core provide issue-contract validation, task/review packets,
+workflow labels, direct-command and optional ACP adapters, verification reports,
+audit records, and draft-PR delivery. SQLite stores events and decisions; the
+local Unix-socket daemon exposes health and decision operations. The TUI shows
+sessions and dispatches commands. Read-only operations are the default;
+state-changing commands use their configured policy and operator confirmation.
+See README for current behavior. In particular, current commands do not yet
+provide the staged planning or version-bound automated workflow specified here.
 
-## Planned handoff model
+Existing JSON sessions are issue-oriented. The daemon does not yet supervise
+execution; ACP permissions still use terminal prompts. Builds use the operator
+checkout and can open a draft before verification. These capabilities do not
+provide the versioned workflow runs, step attempts, or recovery defined here.
 
-These are requirements, not claims about current JSON sessions or SQLite:
+## Human handoff
 
-- **Task:** controller-owned durable identity for a requested outcome, linked
-  to its source issue when one exists; one task has one or more versions and runs.
-- **TaskVersion:** immutable identity and scope revision of a task, including
-  exclusions, acceptance criteria and verification contract. Approval applies
-  to a particular version.
-- **Run:** a uniquely identified bounded attempt against one task version and
-  configuration snapshot. A task can have multiple runs; each has its own state,
-  limits, decisions, evidence and deliveries.
-- **AgentSession:** a uniquely identified role/runtime interaction linked to
-  a run; a run can have multiple sessions. The runtime supplies session identity;
-  the controller records the link and retains authority.
-- **Decision:** a uniquely identified operator resolution of a specific request,
-  bound to its run, version and permitted action. It is single-use and expires
-  when specified; neither an agent nor a notification can approve it.
-- **Evidence:** controller-recorded verification or review, tied to the produced
-  revision and run, including failed, skipped and waived checks. A waiver is
-  attributed to a named operator and never represented as a pass.
-- **Delivery:** controller-recorded identity and status of branch, commit and PR
-  actions, their authorization and reconciliation evidence, linked to a run.
-  Retry reconciles remote state before repeating an external mutation.
-
-Approval binds the immutable TaskVersion, configuration snapshot, permitted
-actions and execution limits. A change to scope, configuration or limits
-requires a new approval for the updated version or snapshot. Approval cannot be
-inferred from conversation, prior runs, agent assertions or `--yes` on another
-command. These version-bound guarantees and durable expiry are planned, not yet
-implemented.
-
-## Planned lifecycle and outcomes
-
-The desired entry point is `conveyor task create "Task to do"`. A human-facing
-planning agent and operator build the structured spec and execution plan in
-digestible stages: outcome/scope, behavior/questions, verification, then
-execution/authority. The agent summarizes each stage and continues unless
-corrected. During planning it may read code and documentation, but must not
-change code or run checks. It proposes focused tests/checks for inclusion in the
-approved plan. Initially, planning may happen in an external agent; saving and
+The desired first interaction is `conveyor task create "Task to do"`. A
+human-facing planning agent works with the operator to create a structured spec
+and execution plan. Planning proceeds in digestible stages: outcome and scope;
+behavior and open questions; verification; then execution and authority. After
+each stage the agent summarizes the decisions and continues unless the operator
+corrects it. At the end, the controller presents the complete resolved plan for
+one explicit approval. This interaction is planned; implementation may initially
+stage planning in an external agent before embedding it in Conveyor. Saving and
 resuming an unfinished planning conversation is future work.
 
-After material questions are resolved, the controller presents the full spec
-and plan for one explicit final approval. That approval authorizes the complete
-listed workflow: scoped implementation, the agreed checks, review, and only the
-delivery actions named in the plan. Approval binds the immutable TaskVersion,
-workflow/configuration snapshot, permitted actions, and limits. Any change to
-scope, checks, configuration, or limits requires new approval. After approval,
-clean checks and review proceed automatically without a mandatory human review
-gate. In-scope review findings can use the shared repair attempt, followed by
-fresh verification and review. Pause for a material out-of-scope decision, new
-authority, or a blocker unresolved within approved limits. The operator inspects
-the resulting packet/PR; merge and deployment remain operator decisions.
+During planning, the agent may freely read relevant code and documentation but
+must not change code or run checks. It proposes focused tests and other checks;
+the operator approves the exact verification plan before execution. The spec
+uses the canonical issue sections:
 
-Runtime permission requests covered by the approved plan may be granted only
-when the controller matches the specific requested operation to that authority.
-Unknown, ambiguous, or out-of-scope requests pause for the operator. Record each
-request and decision; there is no silent blanket permission, and `--yes` is not
-a general bypass.
+- Problem, in scope, out of scope, and acceptance criteria.
+- Affected components, verification plan, dependencies and risks, open questions.
 
-The V0 workflow is `prepare → implement → verify → review → simulate-deliver`.
+The handoff adds the repository/base revision, selected workflow and overrides,
+separately configured implementation and review agent selections, permitted
+actions, time/attempt limits, and review policy. Each acceptance criterion maps
+to a mechanical check or to a decision that must be resolved before approval.
+Material unanswered questions prevent approval. Syntactic validation alone does
+not prove a spec is adequate.
+
+One explicit approval authorizes the complete listed workflow: scoped
+implementation, the agreed checks, review, and the specifically authorized
+delivery action. Approval binds an immutable spec version, workflow version,
+configuration snapshot, permitted actions, and limits. Changes require a new
+version and approval; active runs retain their original definitions. Planning
+conversation is supporting context, not execution authority. After approval,
+the controller proceeds end to end without a mandatory human review gate when
+verification and review are clean. It pauses for a material out-of-scope
+decision, a request for new authority, or a blocker that cannot be resolved
+within the approved limits. The operator inspects the resulting packet/PR;
+merge and deploy remain separate operator decisions.
+
+## Workflow and composition
+
+The first workflow is `prepare → implement → verify → review → simulate-deliver`.
 One repair attempt is shared across verification failures and in-scope review
-findings. A changed revision must pass verification and review again. V0 allows
-30 minutes of active execution, excluding human waits when no executor is
-running. Exhaustion returns a truthful failed/blocked result and preserves work.
+findings. A repair always returns to verification; a changed revision must pass
+verification and review again. Review findings within approved scope can trigger
+that repair automatically. A clean review does not wait for a mandatory human
+approval; a human inspects the completed local packet afterward. Exhausting the
+repair or time budget yields a truthful failed/blocked result and preserves work.
+The pilot allows 30 minutes of active execution, excluding human waits when no
+executor is running.
 
-V0 review-ready means the approved verification and review contract passed for
-the candidate revision and a local simulated-delivery packet was created. The
-packet is not a real PR. Later real delivery requires reconciled PR identity.
-The packet contains proposed PR title/summary, diff, base/target and candidate
-revisions, check results, review findings, unresolved concerns, and a simulated
-delivery identity/idempotency record. Repeatable controller/CI evaluations use
-fresh fixture repositories and deterministic fake agents; separate real-model
-Luna runs measure variable outcomes, time, and available cost. Containers are
-optional. Never inject artificial defects into real delivery.
-Failure and cancellation are terminal for that run; a new run requires approval.
-Cancellation stops owned work and preserves recoverable artifacts. A blocked or
-awaiting-operator run is not terminal and must not silently resume or approve.
+A step definition has a stable name, executor kind (code, agent, or human), typed
+input/output references, completion criteria, failure/attention routing, and
+limits. An agent's completion message cannot satisfy a mechanical gate by itself.
+Step state and artifacts are persisted before dependent work is dispatched.
 
-The [example contract](example-task-contract.md) walks through these cases.
+| Step | Inputs | Required output and completion criterion |
+| --- | --- | --- |
+| Prepare | Approved contract and repository/base revision | Dedicated workspace, recorded base/environment, successful preflight |
+| Implement | Spec and prepared workspace | Recorded candidate commit and change summary; scope concerns surfaced |
+| Verify | Candidate commit and approved checks | Results for each required check tied to that commit; all pass to advance |
+| Repair | Failed verification and remaining allowance | New candidate commit; always returns to verification |
+| Review | Passing verification, diff, acceptance mapping | Review findings and concerns tied to the candidate revision; clean review or an in-scope repair request |
+| Simulate-deliver | Candidate, checks, review, approved delivery scope | Local review packet with proposed PR title/summary, diff, base/target and candidate revisions, checks, review findings, unresolved concerns, and a simulated delivery identity/idempotency record |
 
-## Planned repository onboarding and environments
+Review uses a separately selected review agent and may produce findings. In-scope
+findings use the shared repair allowance; material scope changes pause for the
+operator and require a new approved version. Any code change invalidates
+downstream verification/review evidence. Simulated delivery is local evidence
+only and must never be reported as a real branch or PR. The eventual product goal
+remains a real draft PR; occasional explicitly authorized GitHub smoke tests in a
+dedicated repository are future validation, not part of every pilot run.
 
-Onboarding inspects repository metadata without executing setup: language
-manifests, lockfiles, toolchain versions, dev-container definitions and service
-declarations. Conveyor proposes a reusable blueprint with evidence and
-uncertainties, and asks the operator to resolve ambiguous choices. The operator
-reviews the selected environment, setup commands and checks before execution;
-re-detection proposes a diff rather than silently overwriting configuration.
+The pilot configures implementation and review independently to use Luna through
+the Codex ACP adapter, even though the selected model is initially the same for
+both roles. Before implementation, confirm the exact model identifiers and ACP
+adapter support. If either selection is unavailable, fail visibly and ask for a
+decision; never silently substitute a model/provider or incur unapproved cost.
+OpenCode is a possible later ACP provider, not part of this pilot.
 
-A blueprint supplies defaults for runtimes, versions, setup and verification
-commands, services, environment-variable names, execution mode and cleanup.
-Repository configuration records the chosen blueprint and explicit overrides.
-Secrets and credentials remain outside configuration and task artifacts.
-Start with a native macOS blueprint for the pilot; existing dev-container
-definitions may be supported through a later compatible adapter.
+Composition initially means resolving a versioned base definition with validated
+repository overrides: verification commands, agent selection, time/repair limits,
+and review requirements. Persist the resolved definition and its identity per
+run. Reject unknown overrides and overrides that remove mandatory gates. Arbitrary
+step ordering, custom graph execution, workflow inheritance, and plugins wait for
+observed needs. No external workflow engine dependency is required for validation.
 
-Each managed run uses a dedicated worktree and records its base revision and
-configuration. A worktree separates checkouts, not operating-system permissions:
-native agents run with the user's access. Before unattended work is treated as
-isolated, select and test an execution boundary covering credentials, host files
-and control sockets. The first local loop may remain foreground and interactive;
-daemon-owned execution, disconnect and recovery are later requirements.
+## Durable run contract
 
-## Planned operator experience and agent configuration
+The minimum persisted concepts are:
 
-The TUI is the first operator interface, supported by a CLI and API that share
-the same controller and policy. The intended TUI includes a project conversation,
-task list, decision inbox, compact timeline with expandable activity and output,
-and result view. It shows stages, agent activity, commands, changed files,
-checks, decisions and failures without requiring a full transcript. Persist
-bounded event summaries and make detailed output retention configurable. A
-future graphical client should use the same services; reassess its value after
-using the TUI for real tasks.
+- **Task / SpecVersion:** stable requested outcome and immutable structured spec;
+  a GitHub issue is an optional source, not the run identity.
+- **WorkflowVersion:** immutable resolved step contracts and transition rules.
+- **Run:** one authorized attempt pinned to spec/workflow/configuration/base
+  revision, with limits, current state, and a dedicated workspace.
+- **StepAttempt:** step identity, attempt number, input references, executor and
+  agent-session identity where available, timestamps, outcome, and output refs.
+- **Decision:** scoped operator request/resolution with run/version binding,
+  single resolution, and expiry where specified. An agent cannot approve itself.
+- **Artifact / Evidence:** inspectable file or record with identity, provenance,
+  and revision binding where relevant. Preserve failure evidence as well as passes.
+- **DeliveryAttempt:** intended external effect, authority, reconciliation status,
+  and observed Git/GitHub identity.
 
-The conversational agent may investigate, propose a task, ask questions and
-explain results through structured controller operations. It cannot approve its
-own proposal, change an approved scope or declare a failed check successful.
-The operator may answer a blocker without changing scope; a material scope
-change requires a new approval. A fresh conversation reconstructs status from
-controller records rather than relying on conversation history.
+Run states distinguish queued, running, awaiting operator, blocked, interrupted,
+failed, cancelled, delivered with waiver, and review-ready. Step attempts
+distinguish pending, running, awaiting operator, succeeded, failed, interrupted,
+cancelled, and explicitly skipped. A skip records a reason and cannot satisfy a
+required gate. Successful step completion and the next eligible transition
+commit atomically with events.
 
-Agent roles should independently select a provider and model, with optional
-provider-specific controls only where supported. Preserve compatibility with
-existing configuration and specify precedence for defaults and run overrides.
-For the pilot, implementation and review are separate role configurations,
-both selecting Luna through Codex ACP. Confirm exact model identifiers and
-adapter support before implementation. If unavailable, fail visibly; never
-silently switch models/providers or incur unapproved cost. OpenCode is a later
-planned ACP provider. Evaluate conversational model candidates on representative
-tasks, latency, tool reliability, corrections and cost before choosing defaults.
-Role naming and exact provider capabilities remain design decisions.
+Review-ready means the candidate revision satisfies the approved verification
+and review contract and has a complete local simulated-delivery packet in V0.
+That packet is not a real PR and does not prove GitHub behavior. Later real
+delivery requires reconciled PR identity. Operator inspection/acceptance is
+recorded separately; PR merge is not inferred from it.
+Required-check waivers remain explicit named decisions and appear in the result;
+a waived run is reported as delivered with waiver, not unqualified review-ready.
 
-## Planned workspace management
+SQLite is authoritative for new managed runs; JSON remains an export/artifact
+format. Legacy sessions remain inspectable with explicit legacy identity rather
+than being presented as approved versioned runs.
 
-List Conveyor-managed worktrees with their task, run, status, last activity,
-path and approximate disk usage where available. Explain that shared Git objects
-and external caches make estimates incomplete. The CLI and TUI should offer a
-preview and explicitly confirmed manual cleanup of a selected managed worktree.
-Never target the primary checkout or worktrees Conveyor does not own. Refuse to
-remove active work or work that is uncommitted, unpushed, unreconciled or
-otherwise not preserved, and explain how to preserve it. Use Git-aware removal
-and report reclaimed space only when measurable.
+## Execution and recovery
 
-An optional age-based retention policy may follow, disabled by default and
-configurable per repository or blueprint. It must recheck ownership, activity
-and preservation at deletion time and record an audit event. Define last
-activity and behavior when remotes cannot be reached before enabling it; age
-alone does not establish that work is safe to discard.
+The daemon owns execution, not a connected CLI/TUI. One worker uses a dedicated
+workspace and an appropriate OS-user/container boundary for unattended execution.
+A worktree separates edits but is not a security sandbox. Keep delivery
+credentials and controller sockets outside worker access. Verification commands
+execute within the worker boundary too.
 
-## Delivery, success and deferred expansion
+Enforce execution wall-clock and repair-attempt limits and cancellation of owned
+processes. Accumulate elapsed executing time across attempts; waiting for a human
+or external prerequisite is excluded, with no executor left running during that
+wait. Persist attempt deadlines so a restart cannot reset the allowance; an
+unreconciled running interval consumes time until the worker is confirmed stopped.
+Report cost/usage when available; do not claim a hard spend cap without runtime
+support. An unsupported required permission or limit fails preflight explicitly.
+Runtime permission requests explicitly covered by the approved plan may be
+granted only when the controller can match the specific requested operation to
+that authority. Unknown, ambiguous, or out-of-scope requests pause for the
+operator. Record both requests and decisions. There is no silent blanket grant;
+`--yes` on a Conveyor command does not generally authorize later agent requests.
 
-The [roadmap](ROADMAP.md) is authoritative for sequencing and exit demonstrations.
-Its initial goal is a local macOS task-to-simulated-result loop, followed by
-durable daemon ownership, reconnect and conversational handoff. A local packet
-is not a real PR. Real draft-PR delivery is a later explicitly authorized
-validation. Review-ready requires the approved verification/review contract
-and evidence for the resulting revision. Failed or interrupted work must remain
-inspectable and recoverable; retries reconcile delivery state.
+Persist action intent before external effects. Recovery reconciles processes,
+workspaces, commits, branches, and PRs before repeating work. A daemon restart
+must not create a second worker or duplicate delivery. Unknown outcomes remain
+interrupted or awaiting operator until reconciled. Resume agent sessions only
+when supported; otherwise preserve the attempt and require an explicit bounded
+retry. Recovery is not guaranteed identical LLM output, automatic conversation
+replay, or exactly-once execution across external systems.
 
-Evaluate repeatability with fresh fixture repositories, deterministic scripted/
-fake agents and simulated delivery for CI and controller recovery/idempotency
-tests. Run separate real-model Luna evaluations to measure variable outcomes,
-time and available cost. Never introduce artificial defects into a real
-delivery. The later Swan League commissioner participation task is a distinct
-real-world trial. Stronger container-backed environments, a dedicated dev box,
-remote and multiple workers, scheduling, notifications, webhooks and graphical
-interfaces are later options driven by demonstrated need.
+## Run output
+
+Plain text is the required first interface; JSON supports inspection/automation.
+The TUI may render the same records without gaining separate workflow logic.
+Show run/spec/workflow identities, overall state and current step, ordered step
+attempts and durations, input/output artifact references, revisions, checks,
+decisions, remaining limits, delivery link, and the next available operator action.
+A fresh client must reconstruct this view without conversation history.
+
+This is Temporal-like run visibility and durable progress, not a promise of
+Temporal's complete execution/replay model. Keep bounded summaries and artifact
+references; never persist credentials or full secret-bearing transcripts.
+
+## Validation and deferred scope
+
+The [example](example-task-contract.md) and delivery plan define the first proof:
+an approved local pilot spec, a scripted failure repaired within the shared
+allowance, simulated delivery, and a reviewable packet with revision-bound
+evidence. Repeatable CI/controller evaluations use a fresh fixture repository
+per run, deterministic scripted/fake agents, and simulated delivery for recovery
+and idempotency tests. Containers are optional. Separate real-model Luna runs
+measure variable outcomes, time, and cost. Never introduce artificial defects
+into a real delivery. Always-on host/reboot and real GitHub delivery are later
+optional validations, not V0 exit criteria.
+
+Defer embedded planning chat, new browser UI, visual workflow editors, arbitrary
+DAGs, parallel workers, multi-host scheduling, webhooks, notifications, knowledge
+graphs, ontologies, and model routing. A few real runs and measured friction must
+justify expansion. These requirements do not change existing command guarantees
+until their replacement behavior is implemented and documented.
