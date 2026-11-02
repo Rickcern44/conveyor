@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use crate::event::AgentEvent;
 
@@ -12,6 +12,22 @@ pub struct PendingDecision {
     pub kind: String,
     pub summary: String,
     pub expires_at_unix_seconds: Option<i64>,
+}
+
+/// Immutable specification content identified by a task and version.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SpecVersion {
+    pub task_id: String,
+    pub version: i64,
+    pub contract: String,
+}
+
+/// Immutable resolved workflow content identified by workflow and version.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkflowVersion {
+    pub workflow_id: String,
+    pub version: i64,
+    pub definition: String,
 }
 
 /// Opens and migrates `.conveyor/conveyor.db` for one repository.
@@ -53,6 +69,53 @@ impl ControlPlaneStore {
                 |row| row.get(0),
             )
             .map_err(ControlPlaneError::Sql)
+    }
+
+    /// Insert a new immutable spec version; an existing identity is never replaced.
+    pub fn insert_spec_version(&self, spec: &SpecVersion) -> Result<(), ControlPlaneError> {
+        self.connection
+            .execute(
+                "INSERT INTO spec_versions(task_id, version, contract) VALUES (?1, ?2, ?3)",
+                rusqlite::params![spec.task_id, spec.version, spec.contract],
+            )
+            .map_err(ControlPlaneError::Sql)?;
+        Ok(())
+    }
+
+    pub fn spec_version(
+        &self,
+        task_id: &str,
+        version: i64,
+    ) -> Result<Option<SpecVersion>, ControlPlaneError> {
+        self.connection.query_row(
+            "SELECT task_id, version, contract FROM spec_versions WHERE task_id = ?1 AND version = ?2",
+            rusqlite::params![task_id, version],
+            |row| Ok(SpecVersion { task_id: row.get(0)?, version: row.get(1)?, contract: row.get(2)? }),
+        ).optional().map_err(ControlPlaneError::Sql)
+    }
+
+    /// Insert a resolved definition under a new immutable workflow identity.
+    pub fn insert_workflow_version(
+        &self,
+        workflow: &WorkflowVersion,
+    ) -> Result<(), ControlPlaneError> {
+        self.connection.execute(
+            "INSERT INTO workflow_versions(workflow_id, version, definition) VALUES (?1, ?2, ?3)",
+            rusqlite::params![workflow.workflow_id, workflow.version, workflow.definition],
+        ).map_err(ControlPlaneError::Sql)?;
+        Ok(())
+    }
+
+    pub fn workflow_version(
+        &self,
+        workflow_id: &str,
+        version: i64,
+    ) -> Result<Option<WorkflowVersion>, ControlPlaneError> {
+        self.connection.query_row(
+            "SELECT workflow_id, version, definition FROM workflow_versions WHERE workflow_id = ?1 AND version = ?2",
+            rusqlite::params![workflow_id, version],
+            |row| Ok(WorkflowVersion { workflow_id: row.get(0)?, version: row.get(1)?, definition: row.get(2)? }),
+        ).optional().map_err(ControlPlaneError::Sql)
     }
 
     pub fn record_event(&self, event: &AgentEvent) -> Result<(), ControlPlaneError> {
@@ -156,7 +219,10 @@ impl ControlPlaneStore {
 }
 
 fn apply_migrations(connection: &Connection) -> Result<(), ControlPlaneError> {
-    connection
+    let transaction =
+        rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)
+            .map_err(ControlPlaneError::Sql)?;
+    transaction
         .execute_batch(
             "
             CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -166,17 +232,15 @@ fn apply_migrations(connection: &Connection) -> Result<(), ControlPlaneError> {
             ",
         )
         .map_err(ControlPlaneError::Sql)?;
-    let applied = connection
+    let applied = transaction
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 1)",
             [],
             |row| row.get::<_, bool>(0),
         )
         .map_err(ControlPlaneError::Sql)?;
-    if applied {
-        return Ok(());
-    }
-    connection
+    if !applied {
+        transaction
         .execute_batch(
             "
             CREATE TABLE repositories (id INTEGER PRIMARY KEY, repository TEXT NOT NULL UNIQUE, created_at_unix_seconds INTEGER NOT NULL);
@@ -193,7 +257,29 @@ fn apply_migrations(connection: &Connection) -> Result<(), ControlPlaneError> {
             INSERT INTO schema_migrations(version, applied_at_unix_seconds) VALUES (1, strftime('%s', 'now'));
             ",
         )
-        .map_err(ControlPlaneError::Sql)
+        .map_err(ControlPlaneError::Sql)?;
+    }
+    let applied = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 2)",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(ControlPlaneError::Sql)?;
+    if !applied {
+        transaction.execute_batch("
+            CREATE TABLE spec_versions (task_id TEXT NOT NULL CHECK(length(trim(task_id)) > 0), version INTEGER NOT NULL CHECK(version > 0), contract TEXT NOT NULL CHECK(length(trim(contract)) > 0), PRIMARY KEY(task_id, version));
+            CREATE TABLE workflow_versions (workflow_id TEXT NOT NULL CHECK(length(trim(workflow_id)) > 0), version INTEGER NOT NULL CHECK(version > 0), definition TEXT NOT NULL CHECK(length(trim(definition)) > 0), PRIMARY KEY(workflow_id, version));
+            CREATE TRIGGER spec_versions_no_replace BEFORE INSERT ON spec_versions WHEN EXISTS (SELECT 1 FROM spec_versions WHERE task_id = NEW.task_id AND version = NEW.version) BEGIN SELECT RAISE(ABORT, 'spec versions are immutable'); END;
+            CREATE TRIGGER workflow_versions_no_replace BEFORE INSERT ON workflow_versions WHEN EXISTS (SELECT 1 FROM workflow_versions WHERE workflow_id = NEW.workflow_id AND version = NEW.version) BEGIN SELECT RAISE(ABORT, 'workflow versions are immutable'); END;
+            CREATE TRIGGER spec_versions_no_update BEFORE UPDATE ON spec_versions BEGIN SELECT RAISE(ABORT, 'spec versions are immutable'); END;
+            CREATE TRIGGER spec_versions_no_delete BEFORE DELETE ON spec_versions BEGIN SELECT RAISE(ABORT, 'spec versions are immutable'); END;
+            CREATE TRIGGER workflow_versions_no_update BEFORE UPDATE ON workflow_versions BEGIN SELECT RAISE(ABORT, 'workflow versions are immutable'); END;
+            CREATE TRIGGER workflow_versions_no_delete BEFORE DELETE ON workflow_versions BEGIN SELECT RAISE(ABORT, 'workflow versions are immutable'); END;
+            INSERT INTO schema_migrations(version, applied_at_unix_seconds) VALUES (2, strftime('%s', 'now'));
+        ").map_err(ControlPlaneError::Sql)?;
+    }
+    transaction.commit().map_err(ControlPlaneError::Sql)
 }
 
 #[derive(Debug)]
