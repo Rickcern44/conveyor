@@ -9,6 +9,23 @@ The conversational agent investigates, proposes, asks, and explains; the
 deterministic controller owns authoritative state, approvals, checks, limits,
 recovery, and delivery. Interactive and unattended use share that controller.
 
+The first V0 pilot is local on the operator's Mac, using a planned but not yet
+provisioned Swan-like test repository with a .NET API, React/Vite, and Aspire.
+Its backend-only task is `GET /api/health/details` returning application name
+and version, covered by tests. Delivery is simulated into a local review packet;
+this does not prove real GitHub behavior. A later real-world trial uses Swan
+League commissioner participation work and is separate from the test pilot.
+An always-on host, SSH/reboot survival, and real draft-PR smoke tests are
+optional later validations, not prerequisites.
+
+The desired initial command is `conveyor task create "Task to do"`. Planning
+stages outcome/scope, behavior/questions, verification, and execution/authority
+in digestible chunks, summarizing each and continuing unless corrected. The
+planning agent may read code and docs but cannot change code or run checks; it
+proposes focused tests/checks for the final approved plan. Initially, planning
+may use an external agent before integration. Saving and resuming an unfinished
+planning conversation is future work.
+
 ### Operator interface
 
 Use the TUI as the first operator surface, alongside a complete CLI/API for
@@ -81,7 +98,7 @@ rename or close GitHub issues.
 | --- | --- | --- |
 | M0 — contract and foundation | Agree on the task, approval, and local product contract | A worked handoff specifies scope, checks, limits, and authority |
 | M1 — repository onboarding | Detect facts and configure a reusable environment | Onboard a real macOS repository and run checks in a worktree |
-| M2 — local closed loop | Implement, verify, and deliver one bounded task | Return a reviewable PR or preserved work with evidence |
+| M2 — local closed loop | Implement, verify, review, and simulate delivery for one bounded task | Return a local review packet or preserved work with revision-bound evidence |
 | M3 — durability and visibility | Reconnect to work and understand its progress | Restart safely and recover events, decisions, and outcome |
 | M4 — conversational handoff | Discuss and approve work through the TUI | Go from conversation to result and request changes |
 | M5 — personal pilot | Improve the experience through real use | Measure accepted work, operator attention, rework, and maintenance |
@@ -92,9 +109,29 @@ delivery relationships, approval of exact task content and configuration, and
 what constitutes a verified result. Existing issue contracts and task packets
 are starting points; section presence alone is not semantic readiness. In
 particular, applying an adapted issue should use the reviewed proposal rather
-than regenerate it. Select the pilot repository, agent, task, and baseline.
-Define the configuration and compatibility contract for role-specific provider
-and model selection; defer model research and final defaults until evaluation.
+than regenerate it. Confirm the planned Swan-like test repository/task before
+provisioning; keep the later Swan League commissioner participation trial
+distinct. The test task changes only the .NET backend and returns application
+name/version from `GET /api/health/details`.
+
+One explicit final approval covers the complete named workflow: scoped
+implementation, agreed checks, review, and only authorized delivery. After
+approval, clean checks/review proceed automatically. One repair attempt is
+shared across verification and in-scope review findings; changed revisions
+return through verification and review. The initial policy is 30 minutes active
+execution, excluding human waits while no executor runs. Pause for material
+scope/out-of-scope decisions, new authority, or blockers unresolved within the
+approved limits. A clean review has no additional human approval gate; the
+operator inspects the resulting packet, while merge/deploy remain operator
+decisions. Runtime permission requests may be granted only when the controller
+matches the specific operation to approved authority; unknown/ambiguous requests
+pause and both request and decision are recorded.
+
+Configure implementation and review separately to use Luna through Codex ACP.
+Confirm exact model identifiers and adapter support before implementation. Fail
+visibly if unavailable; never silently switch models/providers or incur
+unapproved cost. OpenCode is a later ACP provider. Defer model research/defaults
+until evaluation.
 
 M1 delivers the detection and reviewed blueprint configuration above, plus a
 dedicated worktree with recorded base revision. Run only explicitly approved
@@ -113,11 +150,15 @@ Use Git-aware removal and report reclaimed space only when it can be measured.
 
 M2 delivers a usable foreground, interactive loop: one approved task, one
 agent, configured checks, and a result with changes, revision-bound evidence,
-failures, unresolved questions, and either a draft PR or recoverable work. A
-draft PR and review-ready status are distinct; failed required checks cannot
-be reported as passing. Add bounded attempts and enforceable limits, and
-reconcile delivery retries to avoid duplicate PRs. Do not promise a hard spend
-limit unless the provider supplies a mechanism to enforce it.
+failures, unresolved concerns, and a local simulated-delivery packet or
+recoverable work. The packet contains proposed PR title/summary, diff,
+base/target and candidate revisions, checks, review findings, unresolved
+concerns, and delivery identity/idempotency. It is not a real PR. A later
+explicitly authorized smoke test in a dedicated repository can validate real
+GitHub delivery; it is not required for every run. Failed required checks
+cannot be reported as passing. Add bounded attempts and enforceable limits, and
+reconcile real delivery retries before repeating effects. Do not promise a hard
+spend limit unless the provider supplies a mechanism to enforce it.
 
 M3 moves execution to the daemon, persists task versions, attempts, decisions,
 events, evidence and delivery state in SQLite, and makes CLI and TUI clients of
@@ -127,22 +168,29 @@ safe restart reconciliation. Test that disconnecting preserves work, no silent
 approval occurs, and retries cannot duplicate execution or delivery. Include a
 tested execution and credential boundary before unattended operation.
 
-M4 connects a conversational planner to structured controller operations for
-proposals, approved execution, status, changes, and cancellation. A blocker
-answer and a scope change are different; only the controller changes state.
-Make the same actions available through the CLI/API. A fresh conversation must
-reconstruct progress from records. Move basic conversation earlier if issue
-entry proves to be the primary obstacle during the first local trial.
-Deliver role-specific agent/model configuration and an OpenCode ACP adapter as
-a focused slice when the conversational role is introduced, or earlier if
-needed for the pilot. Verify actual provider capabilities, clear failures, and
-existing configuration compatibility without silent model or cost fallback.
+M4 integrates staged planning with structured controller operations for
+proposals, approved execution, status, changes, and cancellation. Initially an
+external planning agent can run the same stages; the desired TUI conversation
+uses the shared controller. A blocker answer and a scope change are different;
+only the controller changes state. Make the same actions available through the
+CLI/API. A fresh conversation reconstructs progress from records; saving and
+resuming an unfinished planning conversation is future work. Configure
+implementation/review provider and model selections independently. Use the
+pilot's Codex ACP/Luna selections when supported; add OpenCode ACP later. Verify
+actual provider capabilities, clear failures, and compatibility without silent
+model or cost fallback.
 
-M5 tests at least five real tasks across a bug, a small feature, and maintenance.
-Record task size, failures, accepted work, attention, rework, and platform
-maintenance against a small manual baseline. Use findings to refine the TUI and
-decide whether a graphical client is warranted; the pilot is an initial signal,
-not proof of general productivity gains.
+Use fresh fixture repositories per run with deterministic scripted/fake agents
+and simulated delivery for repeatable CI, controller recovery, and idempotency
+tests; containers are optional. Separately run real-model Luna evaluations to
+measure variable outcomes, elapsed time, operator attention, and available cost.
+Never introduce artificial defects into real delivery. M5 can test at least five
+real tasks across a bug, small feature, and maintenance, recording task size,
+failures, accepted work, attention, rework, and platform maintenance against a
+small manual baseline. The later Swan League commissioner participation trial
+is separate from the Swan-like test fixture. Use findings to refine the TUI and
+decide whether a graphical client is warranted; a small pilot is not proof of
+general productivity gains.
 
 M6 considers a container/dev-container adapter and the Linux dev box after the
 local product is useful. If selected, begin with one controller and worker on
@@ -161,20 +209,25 @@ safe to discard.
 
 ### Next slice
 
-Complete the product and approval contract in M0, then choose the first macOS
-repository and onboarding blueprint. Carry current CI and contract issues
-forward without duplicating them to fit the revised names. The first local loop
-may be interactive; disconnect/reconnect and safe recovery are the next gate,
-not an assumed current capability.
+Complete the product and approval contract in M0, confirm/provision the planned
+Swan-like macOS fixture repository and health-details task, then onboard it with
+a reviewed blueprint. Carry current CI and contract issues forward without
+duplicating them to fit the revised names. The first local loop may be
+interactive; disconnect/reconnect and safe recovery are a later gate, not an
+assumed current capability.
 
 ---
 
 ## Earlier roadmap (superseded milestone numbering)
 
-The following prior plan is retained as a source of detailed acceptance and
-recovery ideas. Its Linux-first ordering and milestone numbers are superseded by
-the revised direction above; individual details should be reconciled when their
-corresponding revised milestone is specified.
+The following prior plan is retained as a technical reference for durable task
+and run state, step attempts, revision-bound evidence, bounded recovery,
+idempotent delivery when real delivery is enabled, and legacy compatibility.
+Its Linux-first ordering, pilot/repository assumptions, human-review gates,
+runtime-permission behavior, and first-pilot real-PR/host demonstrations are
+superseded by the revised direction above; do not treat them as current exit
+criteria. Where those sections conflict, the revised pilot and approval policy
+above governs.
 
 Status: planned; baseline inspected 2026-10-29.
 
