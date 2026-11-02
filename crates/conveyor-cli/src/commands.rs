@@ -23,6 +23,7 @@ pub(crate) fn execute(cli: Cli, directory: &Path) -> Result<String, String> {
     match command {
         Commands::Init(args) => setup::initialize(&args.repository, &args.target_branch, directory),
         Commands::Doctor => setup::doctor(directory),
+        Commands::Preflight => workflow::preflight_models(directory),
         Commands::Status(args) => sessions::status(args.issue, directory),
         Commands::Tui => tui::run(directory),
         Commands::Block(args) => sessions::block(args.number, &args.reason, &args.owner, directory),
@@ -62,7 +63,7 @@ fn format(format: Format) -> &'static str {
 
 fn arguments(command: Commands) -> Vec<String> {
     match command {
-        Commands::Init(_) | Commands::Doctor => {
+        Commands::Init(_) | Commands::Doctor | Commands::Preflight => {
             unreachable!("setup commands are dispatched directly")
         }
         Commands::Status(_) | Commands::Tui | Commands::Block(_) | Commands::Resume(_) => {

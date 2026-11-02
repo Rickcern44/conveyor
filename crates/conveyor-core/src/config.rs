@@ -67,6 +67,7 @@ pub struct AcpAgentCommand {
     pub name: String,
     pub program: String,
     pub args: Vec<String>,
+    pub model: Option<String>,
 }
 
 /// A side effect that requires an operator confirmation by default.
@@ -254,10 +255,15 @@ impl Config {
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!(
-                    "\n[[acp_agents]]\nname = {}\nprogram = {}\nargs = [{}]\n",
+                    "\n[[acp_agents]]\nname = {}\nprogram = {}\nargs = [{}]\n{}",
                     quote(&agent.name),
                     quote(&agent.program),
-                    args
+                    args,
+                    agent
+                        .model
+                        .as_deref()
+                        .map(|model| format!("model = {}\n", quote(model)))
+                        .unwrap_or_default()
                 )
             })
             .collect::<String>();
@@ -440,6 +446,7 @@ impl AcpAgentCommand {
             name: name.to_owned(),
             program: "npx".to_owned(),
             args: vec!["-y".to_owned(), package.to_owned()],
+            model: None,
         })
     }
 }
@@ -573,6 +580,10 @@ fn parse_acp_agent(
         name: parse_string(check_required(values, "name")?)?,
         program: parse_string(check_required(values, "program")?)?,
         args: parse_array(check_required(values, "args")?)?,
+        model: values
+            .get("model")
+            .map(|value| parse_string(value))
+            .transpose()?,
     })
 }
 

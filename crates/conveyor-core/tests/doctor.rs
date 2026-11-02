@@ -95,6 +95,7 @@ fn checks_the_program_in_a_configured_acp_agent() {
         name: "codex-acp".to_owned(),
         program: "npx".to_owned(),
         args: Vec::new(),
+        model: None,
     });
 
     let report = Doctor::new(&UnhealthyMachine).check(&config);

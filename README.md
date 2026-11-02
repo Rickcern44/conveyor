@@ -276,6 +276,39 @@ implementer = "codex"
 reviewer = "claude"
 ```
 
+To select models independently for implementation and review, define two
+named ACP agents and point each role at its own entry:
+
+```toml
+[agents]
+implementer = "codex-implementation"
+reviewer = "codex-review"
+
+[[acp_agents]]
+name = "codex-implementation"
+program = "npx"
+args = ["-y", "@agentclientprotocol/codex-acp@latest"]
+model = "gpt-6-luna"
+
+[[acp_agents]]
+name = "codex-review"
+program = "npx"
+args = ["-y", "@agentclientprotocol/codex-acp@latest"]
+model = "gpt-6-luna"
+```
+
+When a model is specified, Conveyor requires the adapter to advertise that
+exact model and acknowledge the selection before sending a prompt, including
+when resuming a session. If the model or selection capability is unavailable,
+the invocation fails rather than falling back. Omit `model` to retain the
+adapter's default behavior. Availability depends on the adapter and account;
+`conveyor doctor` does not check model availability. Run `conveyor preflight`
+to open an ACP session for each configured implementation and review role and
+check the exact model without sending an agent prompt. Both roles must specify
+an ACP agent and model. The command exits nonzero if either check fails. It
+launches the configured programs (and `npx` may install an adapter); it does
+not prove that a model can complete a task or that a pilot run is approved.
+
 Conveyor records the ACP session ID in `.conveyor/sessions/<issue>.json`. Send
 a follow-up to the same agent conversation with:
 

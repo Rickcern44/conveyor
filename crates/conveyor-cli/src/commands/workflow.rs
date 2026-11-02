@@ -15,9 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use conveyor_core::agent_adapter::{CommandTemplate, TemplateContext};
 use conveyor_core::build_plan::{BuildInput, prepare};
-#[cfg(feature = "acp")]
-use conveyor_core::config::AcpAgentCommand;
-use conveyor_core::config::{Config, ConfirmationAction};
+use conveyor_core::config::{AcpAgentCommand, Config, ConfirmationAction};
 use conveyor_core::confirmation::{ConfirmationPrompt, Decision, authorize};
 #[cfg(feature = "acp")]
 use conveyor_core::control_plane::ControlPlaneStore;
@@ -215,6 +213,151 @@ fn approve_acp_permission(
 }
 
 #[cfg(feature = "acp")]
+fn model_selector(
+    options: Option<&[agent_client_protocol::schema::v1::SessionConfigOption]>,
+    model: &str,
+) -> Result<agent_client_protocol::schema::v1::SessionConfigId, String> {
+    use agent_client_protocol::schema::v1::{
+        SessionConfigKind, SessionConfigOptionCategory, SessionConfigSelectOptions,
+    };
+    let candidates: Vec<_> = options
+        .unwrap_or_default()
+        .iter()
+        .filter(|option| matches!(option.category, Some(SessionConfigOptionCategory::Model)))
+        .collect();
+    if candidates.len() != 1 {
+        return Err(format!(
+            "ACP agent did not advertise exactly one model selector for `{model}`"
+        ));
+    }
+    let option = candidates[0];
+    let available = match &option.kind {
+        SessionConfigKind::Select(select) => match &select.options {
+            SessionConfigSelectOptions::Ungrouped(options) => {
+                options.iter().any(|item| item.value.to_string() == model)
+            }
+            SessionConfigSelectOptions::Grouped(groups) => groups
+                .iter()
+                .flat_map(|group| &group.options)
+                .any(|item| item.value.to_string() == model),
+            _ => false,
+        },
+        _ => false,
+    };
+    if !available {
+        return Err(format!(
+            "ACP agent does not advertise requested model `{model}`"
+        ));
+    }
+    Ok(option.id.clone())
+}
+
+#[cfg(feature = "acp")]
+fn model_is_selected(
+    options: &[agent_client_protocol::schema::v1::SessionConfigOption],
+    model: &str,
+) -> Result<(), String> {
+    use agent_client_protocol::schema::v1::{SessionConfigKind, SessionConfigOptionCategory};
+    model_selector(Some(options), model)?;
+    let selected = options
+        .iter()
+        .find(|option| matches!(option.category, Some(SessionConfigOptionCategory::Model)));
+    if matches!(selected.map(|option| &option.kind), Some(SessionConfigKind::Select(select)) if select.current_value.to_string() == model)
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "ACP agent did not confirm requested model `{model}`"
+        ))
+    }
+}
+
+/// Check both pilot roles without issuing an agent prompt.
+pub(crate) fn preflight_models(directory: &Path) -> Result<String, String> {
+    let config = load_config(directory)?;
+    let mut lines = Vec::new();
+    let mut failed = false;
+    for (role, name) in [
+        ("implementer", &config.agents.implementer),
+        ("reviewer", &config.agents.reviewer),
+    ] {
+        let result = config
+            .acp_agent(name)
+            .ok_or_else(|| format!("agent `{name}` is not an ACP agent"))
+            .and_then(|agent| match agent.model.as_deref() {
+                Some(model) if !model.trim().is_empty() => preflight_acp_model(&agent, directory),
+                _ => Err(format!("agent `{name}` must specify a model")),
+            });
+        match result {
+            Ok(model) => lines.push(format!("{role}: agent `{name}`, model `{model}` confirmed")),
+            Err(error) => {
+                failed = true;
+                lines.push(format!("{role}: {error}"));
+            }
+        }
+    }
+    let report = lines.join("\n");
+    if failed {
+        Err(format!("model preflight failed:\n{report}"))
+    } else {
+        Ok(format!("model preflight passed:\n{report}"))
+    }
+}
+
+#[cfg(not(feature = "acp"))]
+fn preflight_acp_model(agent: &AcpAgentCommand, _directory: &Path) -> Result<String, String> {
+    Err(acp_feature_required(&agent.name))
+}
+
+#[cfg(feature = "acp")]
+fn preflight_acp_model(agent: &AcpAgentCommand, directory: &Path) -> Result<String, String> {
+    use agent_client_protocol::schema::{
+        ProtocolVersion,
+        v1::{InitializeRequest, NewSessionRequest, SetSessionConfigOptionRequest},
+    };
+    use agent_client_protocol::{AcpAgent, Client};
+    let model = agent
+        .model
+        .clone()
+        .ok_or_else(|| format!("agent `{}` must specify a model", agent.name))?;
+    let process = std::iter::once(agent.program.clone())
+        .chain(agent.args.iter().cloned())
+        .collect::<Vec<_>>();
+    let process = AcpAgent::from_args(process)
+        .map_err(|error| format!("could not configure ACP agent `{}`: {error}", agent.name))?;
+    let directory = directory.to_path_buf();
+    let requested_model = model.clone();
+    futures::executor::block_on(Client.builder().name("conveyor").connect_with(
+        process,
+        async move |connection| {
+            connection
+                .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                .block_task()
+                .await?;
+            let session = connection
+                .send_request(NewSessionRequest::new(&directory))
+                .block_task()
+                .await?;
+            let id = model_selector(session.config_options.as_deref(), &requested_model)
+                .map_err(|message| agent_client_protocol::Error::new(-32602, message))?;
+            let response = connection
+                .send_request(SetSessionConfigOptionRequest::new(
+                    session.session_id,
+                    id,
+                    requested_model.as_str(),
+                ))
+                .block_task()
+                .await?;
+            model_is_selected(&response.config_options, &requested_model)
+                .map_err(|message| agent_client_protocol::Error::new(-32602, message))?;
+            Ok(())
+        },
+    ))
+    .map_err(|error| format!("ACP agent `{}` model `{model}`: {error}", agent.name))?;
+    Ok(model)
+}
+
+#[cfg(feature = "acp")]
 fn run_acp_agent(
     agent_command: &AcpAgentCommand,
     prompt: &str,
@@ -228,7 +371,7 @@ fn run_acp_agent(
             ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest,
             RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
             ResumeSessionRequest, SelectedPermissionOutcome, SessionNotification, SessionUpdate,
-            TextContent,
+            SetSessionConfigOptionRequest, TextContent,
         },
     };
     use agent_client_protocol::{AcpAgent, Client};
@@ -250,6 +393,7 @@ fn run_acp_agent(
     eprintln!("conveyor: {action} ACP agent `{}`...", agent_command.name);
     let existing_session_id = existing_session_id.map(str::to_owned);
     let prompt = prompt.to_owned();
+    let model = agent_command.model.clone();
     let directory = directory.to_path_buf();
     let response = Arc::new(Mutex::new(String::new()));
     let notification_response = Arc::clone(&response);
@@ -320,20 +464,33 @@ fn run_acp_agent(
                     .send_request(InitializeRequest::new(ProtocolVersion::V1))
                     .block_task()
                     .await?;
-                let session_id = if let Some(session_id) = &existing_session_id {
-                    let session_id = session_id.clone();
-                    connection
+                let (session_id, config_options) = if let Some(session_id) = &existing_session_id {
+                    let response = connection
                         .send_request(ResumeSessionRequest::new(session_id.clone(), &directory))
                         .block_task()
                         .await?;
-                    session_id.into()
+                    (session_id.clone().into(), response.config_options)
                 } else {
-                    connection
+                    let response = connection
                         .send_request(NewSessionRequest::new(&directory))
                         .block_task()
-                        .await?
-                        .session_id
+                        .await?;
+                    (response.session_id, response.config_options)
                 };
+                if let Some(model) = &model {
+                    let id = model_selector(config_options.as_deref(), model)
+                        .map_err(|message| agent_client_protocol::Error::new(-32602, message))?;
+                    let response = connection
+                        .send_request(SetSessionConfigOptionRequest::new(
+                            session_id.clone(),
+                            id,
+                            model.as_str(),
+                        ))
+                        .block_task()
+                        .await?;
+                    model_is_selected(&response.config_options, model)
+                        .map_err(|message| agent_client_protocol::Error::new(-32602, message))?;
+                }
                 connection_renderer.set_session_id(session_id.to_string());
                 connection_renderer.emit_kind(if existing_session_id.is_some() {
                     AgentEventKind::SessionResumed
@@ -2117,6 +2274,137 @@ mod tests {
         evidence_path, parse_build_arguments, parse_review_arguments, parse_verify_arguments, run,
         write_packet,
     };
+
+    #[cfg(feature = "acp")]
+    #[test]
+    fn model_selection_requires_an_advertised_model_and_acknowledgement() {
+        use agent_client_protocol::schema::v1::{
+            SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectOption,
+        };
+        let option = SessionConfigOption::select(
+            "model",
+            "Model",
+            "default",
+            vec![
+                SessionConfigSelectOption::new("gpt-6-luna", "Luna"),
+                SessionConfigSelectOption::new("default", "Default"),
+            ],
+        )
+        .category(SessionConfigOptionCategory::Model);
+        assert!(super::model_selector(Some(std::slice::from_ref(&option)), "gpt-6-luna").is_ok());
+        assert!(super::model_selector(Some(std::slice::from_ref(&option)), "missing").is_err());
+        assert!(super::model_selector(None, "gpt-6-luna").is_err());
+        assert!(super::model_is_selected(std::slice::from_ref(&option), "gpt-6-luna").is_err());
+        let selected = SessionConfigOption::select(
+            "model",
+            "Model",
+            "gpt-6-luna",
+            vec![SessionConfigSelectOption::new("gpt-6-luna", "Luna")],
+        )
+        .category(SessionConfigOptionCategory::Model);
+        assert!(super::model_is_selected(&[selected], "gpt-6-luna").is_ok());
+    }
+
+    #[cfg(feature = "acp")]
+    #[test]
+    fn acp_model_is_selected_before_prompt_and_unavailable_model_never_prompts() {
+        use conveyor_core::config::AcpAgentCommand;
+        let dir = temporary_directory("acp-model-selection");
+        let script = dir.join("agent.py");
+        let log = dir.join("methods");
+        fs::write(&script, r#"import json, sys
+log = sys.argv[1]
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request['method']
+    with open(log, 'a') as out: out.write(method + '\n')
+    option = {'id':'model', 'name':'Model', 'category':'model', 'type':'select', 'currentValue':'default', 'options':[{'value':'default','name':'Default'}, {'value':'gpt-6-luna','name':'Luna'}]}
+    if method == 'initialize': result = {'protocolVersion':1, 'agentCapabilities':{}, 'authMethods':[]}
+    elif method == 'session/new': result = {'sessionId':'test-session', 'configOptions':[option]}
+    elif method == 'session/set_config_option':
+        option['currentValue'] = request['params']['value']
+        result = {'configOptions':[option]}
+    elif method == 'session/prompt': result = {'stopReason':'end_turn'}
+    else: continue
+    print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}), flush=True)
+"#).unwrap();
+        let mut agent = AcpAgentCommand {
+            name: "fake".into(),
+            program: "python3".into(),
+            args: vec![
+                script.to_string_lossy().into_owned(),
+                log.to_string_lossy().into_owned(),
+            ],
+            model: Some("gpt-6-luna".into()),
+        };
+        super::run_acp_agent(&agent, "test", &dir, None, None).unwrap();
+        let methods = fs::read_to_string(&log).unwrap();
+        assert!(
+            methods.find("session/set_config_option").unwrap()
+                < methods.find("session/prompt").unwrap()
+        );
+        fs::write(&log, "").unwrap();
+        agent.model = Some("unavailable".into());
+        let error = super::run_acp_agent(&agent, "test", &dir, None, None)
+            .err()
+            .unwrap();
+        assert!(error.contains("unavailable"), "{error}");
+        assert!(!fs::read_to_string(&log).unwrap().contains("session/prompt"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(feature = "acp")]
+    #[test]
+    fn model_preflight_checks_both_roles_without_prompting() {
+        use conveyor_core::config::AcpAgentCommand;
+        let dir = temporary_directory("model-preflight");
+        let script = dir.join("agent.py");
+        let log = dir.join("methods");
+        fs::write(&script, r#"import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request['method']
+    with open(sys.argv[1], 'a') as out: out.write(method + '\n')
+    option = {'id':'model', 'name':'Model', 'category':'model', 'type':'select', 'currentValue':'default', 'options':[{'value':'gpt-6-luna','name':'Luna'}]}
+    if method == 'initialize': result = {'protocolVersion':1, 'agentCapabilities':{}, 'authMethods':[]}
+    elif method == 'session/new': result = {'sessionId':'test-session', 'configOptions':[option]}
+    elif method == 'session/set_config_option':
+        option['currentValue'] = request['params']['value']
+        result = {'configOptions':[option]}
+    else: raise RuntimeError('unexpected request: ' + method)
+    print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}), flush=True)
+"#).unwrap();
+        let mut config = Config::new("example/repo", "main");
+        config.agents.implementer = "impl".into();
+        config.agents.reviewer = "review".into();
+        let agent = AcpAgentCommand {
+            name: "impl".into(),
+            program: "python3".into(),
+            args: vec![
+                script.to_string_lossy().into_owned(),
+                log.to_string_lossy().into_owned(),
+            ],
+            model: Some("gpt-6-luna".into()),
+        };
+        let mut review = agent.clone();
+        review.name = "review".into();
+        config.acp_agents = vec![agent, review];
+        fs::write(dir.join(".conveyor.toml"), config.to_toml().unwrap()).unwrap();
+        let output = super::preflight_models(&dir).unwrap();
+        assert!(output.contains("implementer") && output.contains("reviewer"));
+        let methods = fs::read_to_string(&log).unwrap();
+        assert_eq!(methods.matches("session/set_config_option").count(), 2);
+        assert!(!methods.contains("session/prompt"));
+        config.acp_agents[1].model = Some("unavailable".into());
+        fs::write(dir.join(".conveyor.toml"), config.to_toml().unwrap()).unwrap();
+        let error = super::preflight_models(&dir).unwrap_err();
+        assert!(
+            error.contains("reviewer") && error.contains("unavailable"),
+            "{error}"
+        );
+        assert!(!fs::read_to_string(&log).unwrap().contains("session/prompt"));
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     fn temporary_directory(name: &str) -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!("conveyor-cli-{name}-{}", std::process::id()));

@@ -19,6 +19,8 @@ pub struct Cli {
 pub enum Commands {
     Init(InitArgs),
     Doctor,
+    /// Check the configured implementation and review ACP models without prompting.
+    Preflight,
     Status(StatusArgs),
     Tui,
     Block(BlockArgs),
@@ -203,6 +205,12 @@ mod tests {
     fn parses_the_interactive_console_command() {
         let cli = Cli::try_parse_from(["conveyor", "tui"]).unwrap();
         assert!(matches!(cli.command, Commands::Tui));
+    }
+
+    #[test]
+    fn parses_model_preflight() {
+        let cli = Cli::try_parse_from(["conveyor", "preflight"]).unwrap();
+        assert!(matches!(cli.command, Commands::Preflight));
     }
 
     #[test]

@@ -73,6 +73,7 @@ fn configuration_round_trips_an_acp_agent_process() {
             "-y".to_owned(),
             "@agentclientprotocol/codex-acp@latest".to_owned(),
         ],
+        model: None,
     });
 
     assert_eq!(
@@ -177,5 +178,36 @@ fn older_configuration_without_in_progress_label_uses_the_safe_default() {
             .workflow
             .in_progress_label,
         "conveyor:in-progress"
+    );
+}
+
+#[test]
+fn acp_role_models_round_trip_independently() {
+    let mut config = Config::new("example/repo", "main");
+    config.agents.implementer = "implementation".into();
+    config.agents.reviewer = "review".into();
+    let mut implementation = AcpAgentCommand::preset("codex").unwrap();
+    implementation.name = "implementation".into();
+    implementation.model = Some("gpt-6-luna".into());
+    let mut review = implementation.clone();
+    review.name = "review".into();
+    review.model = Some("other-model".into());
+    config.acp_agents = vec![implementation, review];
+    let parsed = Config::from_toml(&config.to_toml().unwrap()).unwrap();
+    assert_eq!(
+        parsed
+            .acp_agent(&parsed.agents.implementer)
+            .unwrap()
+            .model
+            .as_deref(),
+        Some("gpt-6-luna")
+    );
+    assert_eq!(
+        parsed
+            .acp_agent(&parsed.agents.reviewer)
+            .unwrap()
+            .model
+            .as_deref(),
+        Some("other-model")
     );
 }
